@@ -1,0 +1,23 @@
+[package]
+name = "waltzgps"
+version = "0.1.0"
+edition = "2021"
+description = "A GTK4 map viewer for Tile Map Service / Web-Mercator providers"
+license = "MIT"
+
+[dependencies]
+# UI toolkit. `gtk` is the crate `gtk4` renamed so the code reads `gtk::...`.
+gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+# Config (de)serialisation.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+# Async channel bridging the worker threads to the GTK main loop
+# (`glib::spawn_future_local`). `futures-util` provides `StreamExt::next`.
+futures-channel = "0.3"
+futures-util = "0.3"
+
+# Tile downloads use the system `curl` binary via std::process, so no HTTP/TLS
+# crate dependency is required. XDG paths and error handling use std only.
+
+[profile.release]
+opt-level = 2
