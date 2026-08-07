@@ -6,6 +6,7 @@ use crate::geo::MapState;
 use gtk::gdk_pixbuf::Pixbuf;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 /// Soft cap on decoded tiles kept in memory; the disk cache is the real store.
@@ -15,6 +16,8 @@ pub type SharedState = Rc<RefCell<AppState>>;
 
 pub struct AppState {
     pub config: Config,
+    /// Path the config was loaded from; edits are written back here.
+    pub config_path: PathBuf,
     pub map: MapState,
     pub active_provider: usize,
     /// Decoded tiles ready to paint.
@@ -30,7 +33,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config) -> SharedState {
+    pub fn new(config: Config, config_path: PathBuf) -> SharedState {
         let map = MapState::new(
             config.general.start_lon,
             config.general.start_lat,
@@ -39,6 +42,7 @@ impl AppState {
         let active_provider = config.default_provider_index();
         Rc::new(RefCell::new(AppState {
             config,
+            config_path,
             map,
             active_provider,
             pixbufs: HashMap::new(),
@@ -47,6 +51,11 @@ impl AppState {
             drag_start_center: (0.0, 0.0),
             last_click_lonlat: (0.0, 0.0),
         }))
+    }
+
+    /// Persist the current config back to its file.
+    pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.config.save(&self.config_path)
     }
 
     /// Max zoom permitted by the active provider.

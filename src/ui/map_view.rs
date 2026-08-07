@@ -9,6 +9,17 @@ use gtk::gdk_pixbuf::{Pixbuf, PixbufLoader};
 use gtk::prelude::*;
 use std::rc::Rc;
 
+/// Update the download-queue indicator: show the count while tiles are pending,
+/// hide it entirely when the queue is empty.
+pub fn set_queue_label(label: &gtk::Label, pending: usize) {
+    if pending == 0 {
+        label.set_visible(false);
+    } else {
+        label.set_text(&format!("\u{2b07} {pending}"));
+        label.set_visible(true);
+    }
+}
+
 /// Decode raw image bytes (PNG/JPEG/…) into a `Pixbuf`.
 pub fn decode_pixbuf(bytes: &[u8]) -> Option<Pixbuf> {
     let loader = PixbufLoader::new();
@@ -18,7 +29,13 @@ pub fn decode_pixbuf(bytes: &[u8]) -> Option<Pixbuf> {
 }
 
 /// Build the map `DrawingArea`, wiring drawing plus drag/scroll/motion input.
-pub fn build(state: SharedState, downloader: Rc<Downloader>) -> gtk::DrawingArea {
+/// `zoom_label` and `queue_label` are HUD widgets refreshed on every redraw.
+pub fn build(
+    state: SharedState,
+    downloader: Rc<Downloader>,
+    zoom_label: gtk::Label,
+    queue_label: gtk::Label,
+) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     area.set_hexpand(true);
     area.set_vexpand(true);
@@ -28,11 +45,21 @@ pub fn build(state: SharedState, downloader: Rc<Downloader>) -> gtk::DrawingArea
         let state = state.clone();
         let downloader = downloader.clone();
         area.set_draw_func(move |_area, cr, width, height| {
+            // Hard edges: tiles are drawn 1:1 at integer coordinates, so any
+            // antialiasing at rectangle borders only produces seams.
+            cr.set_antialias(gtk::cairo::Antialias::None);
+
             let mut st = state.borrow_mut();
             let provider = st.active_provider;
             let z = st.map.zoom;
             let (w, h) = (width as f64, height as f64);
             let (tlx, tly) = st.map.top_left_world(w, h);
+            // Snap the viewport origin to whole pixels. Every tile then lands on
+            // an integer coordinate with exact TILE_SIZE spacing — this removes
+            // both the inter-tile seams and the resample blur that appear when
+            // a pixbuf is painted at a fractional offset.
+            let origin_x = tlx.round();
+            let origin_y = tly.round();
             let ntiles = geo::tile_count(z);
 
             // Range of tile columns/rows intersecting the viewport.
@@ -50,12 +77,17 @@ pub fn build(state: SharedState, downloader: Rc<Downloader>) -> gtk::DrawingArea
                     let wrapped_x = tx.rem_euclid(ntiles) as u32;
                     let tile = TileId::new(z, wrapped_x, ty as u32);
                     let key = TileKey { provider, tile };
-                    let dst_x = tx as f64 * TILE_SIZE - tlx;
-                    let dst_y = ty as f64 * TILE_SIZE - tly;
+                    let dst_x = tx as f64 * TILE_SIZE - origin_x;
+                    let dst_y = ty as f64 * TILE_SIZE - origin_y;
 
                     if let Some(pb) = st.pixbufs.get(&key) {
                         cr.set_source_pixbuf(pb, dst_x, dst_y);
-                        let _ = cr.paint();
+                        // Nearest-neighbour: no interpolation at the 1:1 mapping.
+                        cr.source().set_filter(gtk::cairo::Filter::Nearest);
+                        // Fill only this tile's rectangle rather than paint()ing
+                        // the whole surface with the (edge-transparent) pattern.
+                        cr.rectangle(dst_x, dst_y, TILE_SIZE, TILE_SIZE);
+                        let _ = cr.fill();
                     } else {
                         // Placeholder while the tile loads.
                         cr.set_source_rgb(0.85, 0.85, 0.85);
@@ -67,6 +99,10 @@ pub fn build(state: SharedState, downloader: Rc<Downloader>) -> gtk::DrawingArea
                     }
                 }
             }
+
+            // Refresh the HUD to match what we just drew.
+            zoom_label.set_text(&z.to_string());
+            set_queue_label(&queue_label, st.inflight.len());
         });
     }
 

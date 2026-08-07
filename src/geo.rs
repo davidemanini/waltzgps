@@ -117,9 +117,10 @@ mod tests {
 
     #[test]
     fn known_city_tile() {
-        // Greenwich-ish reference: London (-0.1276, 51.5072) at zoom 12 -> tile (2047, 1362).
+        // London (-0.1276, 51.5072) at zoom 12 -> tile (2046, 1362), per the
+        // standard slippy-map formula floor((lon+180)/360 * 2^z).
         let (tx, ty) = lonlat_to_tile(-0.1276, 51.5072, 12);
-        assert_eq!(tx.floor() as i64, 2047);
+        assert_eq!(tx.floor() as i64, 2046);
         assert_eq!(ty.floor() as i64, 1362);
     }
 

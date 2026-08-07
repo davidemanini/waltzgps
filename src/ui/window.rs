@@ -16,11 +16,27 @@ use std::rc::Rc;
 const PAN_STEP: f64 = 120.0;
 
 pub fn build_ui(app: &gtk::Application, state: SharedState, downloader: Rc<Downloader>) {
-    let area = map_view::build(state.clone(), downloader.clone());
+    install_css();
+
+    // HUD widgets, refreshed from the draw function and the result pump.
+    let zoom_label = gtk::Label::new(None);
+    zoom_label.add_css_class("hud");
+    zoom_label.set_width_chars(2);
+    let queue_label = gtk::Label::new(None);
+    queue_label.add_css_class("hud");
+    queue_label.set_visible(false);
+
+    let area = map_view::build(
+        state.clone(),
+        downloader.clone(),
+        zoom_label.clone(),
+        queue_label.clone(),
+    );
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&area));
-    overlay.add_overlay(&build_nav(state.clone(), area.clone()));
+    overlay.add_overlay(&build_nav(state.clone(), area.clone(), zoom_label));
+    overlay.add_overlay(&build_queue_indicator(queue_label.clone()));
 
     let window = gtk::ApplicationWindow::builder()
         .application(app)
@@ -29,34 +45,142 @@ pub fn build_ui(app: &gtk::Application, state: SharedState, downloader: Rc<Downl
         .default_height(768)
         .child(&overlay)
         .build();
+    // No titlebar or window-manager decorations: the map fills the whole
+    // window and the floating menu/quit buttons take their place.
+    window.set_decorated(false);
 
-    build_titlebar(&window, &state);
-    install_actions(&window, &state, &area);
+    let provider_action = install_actions(&window, &state, &area);
+    overlay.add_overlay(&build_controls(&window, &state, &area, &provider_action));
     install_context_menu(&state, &area);
     install_keyboard(&window, &state, &area);
-    pump_results(state, area, downloader);
+    pump_results(state, area, downloader, queue_label);
 
     window.present();
 }
 
-/// Header bar with a provider-selection menu.
-fn build_titlebar(window: &gtk::ApplicationWindow, state: &SharedState) {
-    let header = gtk::HeaderBar::new();
-    let menu = gio::Menu::new();
+/// Install the application-wide CSS used by the floating HUD widgets.
+fn install_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(
+        ".hud { background-color: rgba(0,0,0,0.65); color: #fff; \
+         padding: 2px 8px; border-radius: 6px; }",
+    );
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
+/// Bottom-left floating download-queue counter.
+fn build_queue_indicator(queue_label: gtk::Label) -> gtk::Box {
+    let container = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    container.set_halign(gtk::Align::Start);
+    container.set_valign(gtk::Align::End);
+    container.set_margin_start(12);
+    container.set_margin_bottom(12);
+    container.append(&queue_label);
+    container
+}
+
+/// Floating top-right controls: a menu button (provider list + editor +
+/// settings) and a quit button. Replaces the window titlebar.
+fn build_controls(
+    window: &gtk::ApplicationWindow,
+    state: &SharedState,
+    area: &DrawingArea,
+    provider_action: &gio::SimpleAction,
+) -> gtk::Box {
+    // Provider radio section (rebuilt when the provider list changes) plus a
+    // static section of editor/settings entries.
+    let provider_section = gio::Menu::new();
+    populate_provider_section(&provider_section, state);
+    let menu_model = gio::Menu::new();
+    menu_model.append_section(None, &provider_section);
+    let actions_section = gio::Menu::new();
+    actions_section.append(Some("Edit providers…"), Some("win.edit-providers"));
+    actions_section.append(Some("Settings…"), Some("win.settings"));
+    menu_model.append_section(None, &actions_section);
+
+    // Callback the dialogs invoke after mutating the provider list.
+    let on_change: Rc<dyn Fn()> = {
+        let provider_section = provider_section.clone();
+        let state = state.clone();
+        let area = area.clone();
+        let provider_action = provider_action.clone();
+        Rc::new(move || {
+            populate_provider_section(&provider_section, &state);
+            let idx = state.borrow().active_provider as i32;
+            provider_action.set_state(&idx.to_variant());
+            area.queue_draw();
+        })
+    };
+
+    // "Edit providers…" action.
+    let edit_action = gio::SimpleAction::new("edit-providers", None);
+    {
+        let window = window.clone();
+        let state = state.clone();
+        let on_change = on_change.clone();
+        edit_action.connect_activate(move |_, _| {
+            crate::ui::dialogs::show_provider_editor(&window, state.clone(), on_change.clone());
+        });
+    }
+    window.add_action(&edit_action);
+
+    // "Settings…" action.
+    let settings_action = gio::SimpleAction::new("settings", None);
+    {
+        let window = window.clone();
+        let state = state.clone();
+        settings_action.connect_activate(move |_, _| {
+            crate::ui::dialogs::show_settings(&window, state.clone());
+        });
+    }
+    window.add_action(&settings_action);
+
+    let menu_button = gtk::MenuButton::new();
+    menu_button.set_icon_name("open-menu-symbolic");
+    menu_button.add_css_class("osd");
+    menu_button.set_popover(Some(&gtk::PopoverMenu::from_model(Some(&menu_model))));
+
+    let quit_button = gtk::Button::from_icon_name("window-close-symbolic");
+    quit_button.add_css_class("osd");
+    quit_button.set_tooltip_text(Some("Quit"));
+    {
+        let window = window.clone();
+        quit_button.connect_clicked(move |_| window.close());
+    }
+
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    controls.set_halign(gtk::Align::End);
+    controls.set_valign(gtk::Align::Start);
+    controls.set_margin_end(12);
+    controls.set_margin_top(12);
+    controls.append(&menu_button);
+    controls.append(&quit_button);
+    controls
+}
+
+/// Fill (or refill) the provider radio section of the menu.
+fn populate_provider_section(section: &gio::Menu, state: &SharedState) {
+    section.remove_all();
     for (i, provider) in state.borrow().config.providers.iter().enumerate() {
         let item = gio::MenuItem::new(Some(&provider.name), None);
         item.set_action_and_target_value(Some("win.provider"), Some(&(i as i32).to_variant()));
-        menu.append_item(&item);
+        section.append_item(&item);
     }
-    let menu_button = gtk::MenuButton::new();
-    menu_button.set_icon_name("open-menu-symbolic");
-    menu_button.set_popover(Some(&gtk::PopoverMenu::from_model(Some(&menu))));
-    header.pack_end(&menu_button);
-    window.set_titlebar(Some(&header));
 }
 
 /// Register the `provider` (stateful) and `show-coords` actions on the window.
-fn install_actions(window: &gtk::ApplicationWindow, state: &SharedState, area: &DrawingArea) {
+/// Returns the provider action so callers can sync its state with the menu.
+fn install_actions(
+    window: &gtk::ApplicationWindow,
+    state: &SharedState,
+    area: &DrawingArea,
+) -> gio::SimpleAction {
     // Provider switching (radio-style stateful action, i32 target = index).
     let initial = state.borrow().active_provider as i32;
     let provider_action = gio::SimpleAction::new_stateful(
@@ -92,6 +216,8 @@ fn install_actions(window: &gtk::ApplicationWindow, state: &SharedState, area: &
         });
     }
     window.add_action(&coords_action);
+
+    provider_action
 }
 
 /// Right-click popover on the map with a single "Show coordinates" item.
@@ -171,7 +297,8 @@ fn digit_index(key: Key) -> Option<usize> {
 }
 
 /// On-screen navigation pad (pan arrows + zoom buttons), bottom-right.
-fn build_nav(state: SharedState, area: DrawingArea) -> gtk::Box {
+/// `zoom_label` sits between the zoom-out and zoom-in buttons.
+fn build_nav(state: SharedState, area: DrawingArea, zoom_label: gtk::Label) -> gtk::Box {
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 6);
     nav.set_halign(gtk::Align::End);
     nav.set_valign(gtk::Align::End);
@@ -202,7 +329,10 @@ fn build_nav(state: SharedState, area: DrawingArea) -> gtk::Box {
         b.connect_clicked(move |_| zoom_center(&state, &area, zoom_in));
         b
     };
+    zoom_label.set_halign(gtk::Align::Center);
+    zoom_label.set_valign(gtk::Align::Center);
     zoom.append(&zoom_button("zoom-out-symbolic", false));
+    zoom.append(&zoom_label);
     zoom.append(&zoom_button("zoom-in-symbolic", true));
 
     nav.append(&pad);
@@ -211,21 +341,30 @@ fn build_nav(state: SharedState, area: DrawingArea) -> gtk::Box {
 }
 
 /// Drive tile results from the downloader into the pixbuf cache and redraw.
-fn pump_results(state: SharedState, area: DrawingArea, downloader: Rc<Downloader>) {
+fn pump_results(
+    state: SharedState,
+    area: DrawingArea,
+    downloader: Rc<Downloader>,
+    queue_label: gtk::Label,
+) {
     let mut results = downloader.take_results();
     glib::spawn_future_local(async move {
         while let Some(res) = results.next().await {
-            let redraw = {
+            let (redraw, pending) = {
                 let mut st = state.borrow_mut();
                 st.inflight.remove(&res.key);
-                match res.data.and_then(|bytes| map_view::decode_pixbuf(&bytes)) {
+                let redraw = match res.data.and_then(|bytes| map_view::decode_pixbuf(&bytes)) {
                     Some(pb) => {
                         st.insert_pixbuf(res.key, pb);
                         true
                     }
                     None => false,
-                }
+                };
+                (redraw, st.inflight.len())
             };
+            // Always reflect the queue size — failed fetches shrink it too,
+            // without triggering a redraw.
+            map_view::set_queue_label(&queue_label, pending);
             if redraw {
                 area.queue_draw();
             }

@@ -26,11 +26,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => Config::default_path(),
     };
     let config = Rc::new(Config::load(&config_path)?);
+    let config_path = Rc::new(config_path);
 
     let app = gtk::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(move |app| {
         let config = (*config).clone();
+        let config_path = (*config_path).clone();
 
         // Disk cache shared with worker threads; trim it in the background.
         let cache = Arc::new(Cache::new(&config.cache));
@@ -41,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let providers = Arc::new(config.providers.clone());
         let downloader = Rc::new(Downloader::new(providers, cache));
-        let state = AppState::new(config);
+        let state = AppState::new(config, config_path);
 
         ui::window::build_ui(app, state, downloader);
     });
