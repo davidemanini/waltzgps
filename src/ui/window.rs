@@ -10,6 +10,7 @@ use gtk::glib;
 use gtk::glib::prelude::*;
 use gtk::prelude::*;
 use gtk::{gio, DrawingArea};
+use std::cell::Cell;
 use std::rc::Rc;
 
 /// Pixels moved per keyboard/button pan step.
@@ -35,7 +36,7 @@ pub fn build_ui(app: &gtk::Application, state: SharedState, downloader: Rc<Downl
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&area));
-    overlay.add_overlay(&build_nav(state.clone(), area.clone(), zoom_label));
+    overlay.add_overlay(&build_nav(state.clone(), area.clone(), downloader.clone(), zoom_label));
     overlay.add_overlay(&build_queue_indicator(queue_label.clone()));
 
     let window = gtk::ApplicationWindow::builder()
@@ -49,13 +50,45 @@ pub fn build_ui(app: &gtk::Application, state: SharedState, downloader: Rc<Downl
     // window and the floating menu/quit buttons take their place.
     window.set_decorated(false);
 
-    let provider_action = install_actions(&window, &state, &area);
-    overlay.add_overlay(&build_controls(&window, &state, &area, &provider_action));
+    let provider_action = install_actions(&window, &state, &area, &downloader);
+    overlay.add_overlay(&build_controls(
+        &window,
+        &state,
+        &area,
+        &downloader,
+        &provider_action,
+    ));
     install_context_menu(&state, &area);
-    install_keyboard(&window, &state, &area);
+    install_keyboard(&window, &state, &area, &downloader);
+    install_state_persistence(&window, &state);
     pump_results(state, area, downloader, queue_label);
 
     window.present();
+}
+
+/// Save the map position on close and periodically (so it survives a crash).
+fn install_state_persistence(window: &gtk::ApplicationWindow, state: &SharedState) {
+    {
+        let state = state.clone();
+        window.connect_close_request(move |_| {
+            state.borrow().save_map_state();
+            glib::Propagation::Proceed
+        });
+    }
+    {
+        let state = state.clone();
+        // Only write when the view actually moved since the last save.
+        let last = Cell::new((f64::NAN, f64::NAN, u8::MAX));
+        glib::timeout_add_seconds_local(5, move || {
+            let st = state.borrow();
+            let cur = (st.map.center_lon, st.map.center_lat, st.map.zoom);
+            if cur != last.get() {
+                last.set(cur);
+                st.save_map_state();
+            }
+            glib::ControlFlow::Continue
+        });
+    }
 }
 
 /// Install the application-wide CSS used by the floating HUD widgets.
@@ -91,6 +124,7 @@ fn build_controls(
     window: &gtk::ApplicationWindow,
     state: &SharedState,
     area: &DrawingArea,
+    downloader: &Rc<Downloader>,
     provider_action: &gio::SimpleAction,
 ) -> gtk::Box {
     // Provider radio section (rebuilt when the provider list changes) plus a
@@ -109,8 +143,18 @@ fn build_controls(
         let provider_section = provider_section.clone();
         let state = state.clone();
         let area = area.clone();
+        let downloader = downloader.clone();
         let provider_action = provider_action.clone();
         Rc::new(move || {
+            // Push the edited list to the worker pool and drop now-stale work
+            // and decoded tiles (indices/URLs may have changed).
+            downloader.set_providers(state.borrow().config.providers.clone());
+            downloader.clear_queue();
+            {
+                let mut st = state.borrow_mut();
+                st.pixbufs.clear();
+                st.inflight.clear();
+            }
             populate_provider_section(&provider_section, &state);
             let idx = state.borrow().active_provider as i32;
             provider_action.set_state(&idx.to_variant());
@@ -180,6 +224,7 @@ fn install_actions(
     window: &gtk::ApplicationWindow,
     state: &SharedState,
     area: &DrawingArea,
+    downloader: &Rc<Downloader>,
 ) -> gio::SimpleAction {
     // Provider switching (radio-style stateful action, i32 target = index).
     let initial = state.borrow().active_provider as i32;
@@ -191,9 +236,10 @@ fn install_actions(
     {
         let state = state.clone();
         let area = area.clone();
+        let downloader = downloader.clone();
         provider_action.connect_activate(move |action, param| {
             if let Some(idx) = param.and_then(|v| v.get::<i32>()) {
-                set_provider(&state, &area, idx as usize);
+                set_provider(&state, &area, &downloader, idx as usize);
                 action.set_state(&idx.to_variant());
             }
         });
@@ -244,10 +290,16 @@ fn install_context_menu(state: &SharedState, area: &DrawingArea) {
 }
 
 /// Arrow keys pan, `i`/`o` zoom, digit keys switch provider.
-fn install_keyboard(window: &gtk::ApplicationWindow, state: &SharedState, area: &DrawingArea) {
+fn install_keyboard(
+    window: &gtk::ApplicationWindow,
+    state: &SharedState,
+    area: &DrawingArea,
+    downloader: &Rc<Downloader>,
+) {
     let keys = gtk::EventControllerKey::new();
     let state = state.clone();
     let area = area.clone();
+    let downloader = downloader.clone();
     let window_for_closure = window.clone();
     keys.connect_key_pressed(move |_, keyval, _code, _mods| {
         let window = &window_for_closure;
@@ -256,8 +308,8 @@ fn install_keyboard(window: &gtk::ApplicationWindow, state: &SharedState, area: 
             Key::Down => pan(&state, &area, 0.0, PAN_STEP),
             Key::Left => pan(&state, &area, -PAN_STEP, 0.0),
             Key::Right => pan(&state, &area, PAN_STEP, 0.0),
-            Key::i | Key::I => zoom_center(&state, &area, true),
-            Key::o | Key::O => zoom_center(&state, &area, false),
+            Key::i | Key::I => zoom_center(&state, &area, &downloader, true),
+            Key::o | Key::O => zoom_center(&state, &area, &downloader, false),
             _ => {
                 if let Some(idx) = digit_index(keyval) {
                     if idx < state.borrow().config.providers.len() {
@@ -298,7 +350,12 @@ fn digit_index(key: Key) -> Option<usize> {
 
 /// On-screen navigation pad (pan arrows + zoom buttons), bottom-right.
 /// `zoom_label` sits between the zoom-out and zoom-in buttons.
-fn build_nav(state: SharedState, area: DrawingArea, zoom_label: gtk::Label) -> gtk::Box {
+fn build_nav(
+    state: SharedState,
+    area: DrawingArea,
+    downloader: Rc<Downloader>,
+    zoom_label: gtk::Label,
+) -> gtk::Box {
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 6);
     nav.set_halign(gtk::Align::End);
     nav.set_valign(gtk::Align::End);
@@ -326,7 +383,8 @@ fn build_nav(state: SharedState, area: DrawingArea, zoom_label: gtk::Label) -> g
         let b = gtk::Button::from_icon_name(icon);
         let state = state.clone();
         let area = area.clone();
-        b.connect_clicked(move |_| zoom_center(&state, &area, zoom_in));
+        let downloader = downloader.clone();
+        b.connect_clicked(move |_| zoom_center(&state, &area, &downloader, zoom_in));
         b
     };
     zoom_label.set_halign(gtk::Align::Center);
@@ -379,8 +437,8 @@ fn pan(state: &SharedState, area: &DrawingArea, dx: f64, dy: f64) {
     area.queue_draw();
 }
 
-fn zoom_center(state: &SharedState, area: &DrawingArea, zoom_in: bool) {
-    {
+fn zoom_center(state: &SharedState, area: &DrawingArea, downloader: &Rc<Downloader>, zoom_in: bool) {
+    let changed = {
         let mut st = state.borrow_mut();
         let (w, h) = (area.width() as f64, area.height() as f64);
         let max_zoom = st.max_zoom();
@@ -389,22 +447,41 @@ fn zoom_center(state: &SharedState, area: &DrawingArea, zoom_in: bool) {
         } else {
             st.map.zoom.saturating_sub(1)
         };
-        st.map.zoom_around(w / 2.0, h / 2.0, w, h, new_zoom);
+        if new_zoom == st.map.zoom {
+            false
+        } else {
+            st.map.zoom_around(w / 2.0, h / 2.0, w, h, new_zoom);
+            // Old-zoom tiles are no longer wanted; re-request the new view.
+            st.inflight.clear();
+            true
+        }
+    };
+    if changed {
+        downloader.clear_queue();
     }
     area.queue_draw();
 }
 
-fn set_provider(state: &SharedState, area: &DrawingArea, idx: usize) {
-    {
+fn set_provider(state: &SharedState, area: &DrawingArea, downloader: &Rc<Downloader>, idx: usize) {
+    let changed = {
         let mut st = state.borrow_mut();
-        if idx < st.config.providers.len() {
+        if idx < st.config.providers.len() && idx != st.active_provider {
             st.active_provider = idx;
             // Clamp zoom to the new provider's maximum.
             let max_zoom = st.max_zoom();
             if st.map.zoom > max_zoom {
                 st.map.zoom = max_zoom;
             }
+            // Discard the previous provider's queued/pending requests so the
+            // new provider's current view is fetched first.
+            st.inflight.clear();
+            true
+        } else {
+            false
         }
+    };
+    if changed {
+        downloader.clear_queue();
     }
     area.queue_draw();
 }

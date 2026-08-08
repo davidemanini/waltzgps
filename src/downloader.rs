@@ -31,7 +31,12 @@ pub struct TileResult {
     pub data: Option<Vec<u8>>,
 }
 
-/// A simple multi-consumer FIFO work queue with blocking `pop`.
+/// A multi-consumer work queue with blocking `pop`.
+///
+/// Serves the **most recently pushed** tile first (LIFO). Because the draw code
+/// enqueues exactly the tiles the current view needs, LIFO ensures a freshly
+/// panned/zoomed view is served ahead of requests left over from where the user
+/// just was.
 struct WorkQueue {
     items: Mutex<VecDeque<TileKey>>,
     available: Condvar,
@@ -50,17 +55,25 @@ impl WorkQueue {
     fn pop(&self) -> TileKey {
         let mut items = self.items.lock().unwrap();
         loop {
-            if let Some(key) = items.pop_front() {
+            // LIFO: newest request (top of stack) first.
+            if let Some(key) = items.pop_back() {
                 return key;
             }
             items = self.available.wait(items).unwrap();
         }
+    }
+
+    /// Drop all not-yet-started requests (e.g. after a zoom/provider change).
+    fn clear(&self) {
+        self.items.lock().unwrap().clear();
     }
 }
 
 /// Handle used by the UI to enqueue requests and drain finished tiles.
 pub struct Downloader {
     queue: Arc<WorkQueue>,
+    /// Provider list shared with the workers; updated live on config edits.
+    providers: Arc<Mutex<Vec<Provider>>>,
     /// Receiver of finished fetches, taken once by the UI's result pump.
     results: RefCell<Option<UnboundedReceiver<TileResult>>>,
 }
@@ -68,8 +81,9 @@ pub struct Downloader {
 impl Downloader {
     /// Spawn the worker pool. The returned handle owns the result receiver,
     /// which the UI claims via [`Downloader::take_results`].
-    pub fn new(providers: Arc<Vec<Provider>>, cache: Arc<Cache>) -> Downloader {
+    pub fn new(providers: Vec<Provider>, cache: Arc<Cache>) -> Downloader {
         let queue = Arc::new(WorkQueue::new());
+        let providers = Arc::new(Mutex::new(providers));
         let (res_tx, res_rx) = mpsc::unbounded::<TileResult>();
 
         for _ in 0..NUM_WORKERS {
@@ -79,11 +93,14 @@ impl Downloader {
             let cache = cache.clone();
             std::thread::spawn(move || loop {
                 let key = queue.pop();
-                let data = match providers.get(key.provider) {
+                // Copy the provider out and release the lock before any network
+                // I/O so config edits never block on a download.
+                let provider = providers.lock().unwrap().get(key.provider).cloned();
+                let data = match provider {
                     None => None,
                     Some(provider) => match cache.get(&provider.name, key.tile) {
                         Some(bytes) => Some(bytes),
-                        None => match fetch(provider, key.tile) {
+                        None => match fetch(&provider, key.tile) {
                             Some(bytes) => {
                                 cache.put(&provider.name, key.tile, &bytes);
                                 Some(bytes)
@@ -98,12 +115,23 @@ impl Downloader {
             });
         }
 
-        Downloader { queue, results: RefCell::new(Some(res_rx)) }
+        Downloader { queue, providers, results: RefCell::new(Some(res_rx)) }
     }
 
     /// Enqueue a tile for fetching (returns immediately).
     pub fn request(&self, key: TileKey) {
         self.queue.push(key);
+    }
+
+    /// Replace the worker pool's provider list (after the config was edited).
+    pub fn set_providers(&self, providers: Vec<Provider>) {
+        *self.providers.lock().unwrap() = providers;
+    }
+
+    /// Drop all pending (not-yet-started) requests; used when the view changes
+    /// enough that queued tiles are no longer wanted.
+    pub fn clear_queue(&self) {
+        self.queue.clear();
     }
 
     /// Claim the result receiver. Panics if called more than once.

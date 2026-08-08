@@ -33,6 +33,14 @@ pub struct General {
     pub start_lon: f64,
     pub start_zoom: u8,
     pub default_provider: String,
+    /// Mouse-wheel zoom sensitivity: scroll deltas are scaled by this before
+    /// accumulating toward a one-level zoom step. Lower = less sensitive.
+    #[serde(default = "default_scroll_sensitivity")]
+    pub scroll_sensitivity: f64,
+}
+
+fn default_scroll_sensitivity() -> f64 {
+    1.0
 }
 
 /// On-disk cache limits.
@@ -77,6 +85,7 @@ impl Default for Config {
                 start_lon: 2.3522,
                 start_zoom: 12,
                 default_provider: "OpenStreetMap".into(),
+                scroll_sensitivity: 1.0,
             },
             providers: vec![
                 Provider {

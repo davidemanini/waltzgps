@@ -70,6 +70,10 @@ pub fn show_provider_editor(
     // --- Buttons ---------------------------------------------------------
     let add_button = gtk::Button::with_label("Add");
     let remove_button = gtk::Button::with_label("Remove");
+    let up_button = gtk::Button::from_icon_name("go-up-symbolic");
+    up_button.set_tooltip_text(Some("Move provider up"));
+    let down_button = gtk::Button::from_icon_name("go-down-symbolic");
+    down_button.set_tooltip_text(Some("Move provider down"));
     let apply_button = gtk::Button::with_label("Apply");
     let close_button = gtk::Button::with_label("Close");
 
@@ -153,6 +157,55 @@ pub fn show_provider_editor(
         });
     }
 
+    // Move up / down: swap the selected provider with its neighbour, keeping
+    // the active-provider index pointed at the same provider.
+    let reorder = {
+        let state = state.clone();
+        let list = list.clone();
+        let status = status.clone();
+        let on_change = on_change.clone();
+        Rc::new(move |up: bool| {
+            let Some(row) = list.selected_row() else {
+                status.set_text("Select a provider to move.");
+                return;
+            };
+            let idx = row.index() as usize;
+            let target = if up {
+                if idx == 0 {
+                    return;
+                }
+                idx - 1
+            } else {
+                idx + 1
+            };
+            {
+                let mut st = state.borrow_mut();
+                if target >= st.config.providers.len() {
+                    return;
+                }
+                st.config.providers.swap(idx, target);
+                if st.active_provider == idx {
+                    st.active_provider = target;
+                } else if st.active_provider == target {
+                    st.active_provider = idx;
+                }
+            }
+            after_change(&state, &on_change, &status);
+            refresh_list(&list, &state);
+            if let Some(row) = list.row_at_index(target as i32) {
+                list.select_row(Some(&row));
+            }
+        })
+    };
+    {
+        let reorder = reorder.clone();
+        up_button.connect_clicked(move |_| reorder(true));
+    }
+    {
+        let reorder = reorder.clone();
+        down_button.connect_clicked(move |_| reorder(false));
+    }
+
     // Apply: write the form back into the selected provider.
     {
         let state = state.clone();
@@ -202,6 +255,8 @@ pub fn show_provider_editor(
     buttons.set_halign(gtk::Align::End);
     buttons.append(&add_button);
     buttons.append(&remove_button);
+    buttons.append(&up_button);
+    buttons.append(&down_button);
     buttons.append(&apply_button);
     buttons.append(&close_button);
 
@@ -232,12 +287,13 @@ pub fn show_settings(parent: &gtk::ApplicationWindow, state: SharedState) {
         .default_width(460)
         .build();
 
-    let (dir, size_mb, age_days) = {
+    let (dir, size_mb, age_days, sensitivity) = {
         let st = state.borrow();
         (
             st.config.cache.directory.clone().unwrap_or_default(),
             st.config.cache.max_size_mb,
             st.config.cache.max_age_days,
+            st.config.general.scroll_sensitivity,
         )
     };
 
@@ -250,6 +306,10 @@ pub fn show_settings(parent: &gtk::ApplicationWindow, state: SharedState) {
     size_spin.set_value(size_mb as f64);
     let age_spin = gtk::SpinButton::with_range(0.0, 36_500.0, 1.0);
     age_spin.set_value(age_days as f64);
+    // Mouse-wheel zoom sensitivity (takes effect immediately on save).
+    let sens_spin = gtk::SpinButton::with_range(0.1, 5.0, 0.1);
+    sens_spin.set_digits(2);
+    sens_spin.set_value(sensitivity);
 
     let form = gtk::Grid::new();
     form.set_row_spacing(8);
@@ -265,6 +325,8 @@ pub fn show_settings(parent: &gtk::ApplicationWindow, state: SharedState) {
     form.attach(&size_spin, 1, 1, 1, 1);
     form.attach(&label("Max age (days, 0 = never)"), 0, 2, 1, 1);
     form.attach(&age_spin, 1, 2, 1, 1);
+    form.attach(&label("Mouse-wheel sensitivity"), 0, 3, 1, 1);
+    form.attach(&sens_spin, 1, 3, 1, 1);
 
     let note = gtk::Label::new(Some("Cache changes take effect on next launch."));
     note.set_halign(gtk::Align::Start);
@@ -287,6 +349,8 @@ pub fn show_settings(parent: &gtk::ApplicationWindow, state: SharedState) {
                     max_size_mb: size_spin.value_as_int() as u64,
                     max_age_days: age_spin.value_as_int() as u64,
                 };
+                // Read live by the scroll handler → effective immediately.
+                st.config.general.scroll_sensitivity = sens_spin.value();
             }
             let msg = match state.borrow().save_config() {
                 Ok(()) => "Saved.".to_string(),

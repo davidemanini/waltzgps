@@ -58,6 +58,25 @@ impl AppState {
         self.config.save(&self.config_path)
     }
 
+    /// Path of the map-state file (last position/zoom).
+    pub fn state_path(&self) -> std::path::PathBuf {
+        crate::persist::MapPersist::path(&self.config_path)
+    }
+
+    /// Snapshot the current map view for persistence.
+    pub fn map_persist(&self) -> crate::persist::MapPersist {
+        crate::persist::MapPersist {
+            lon: self.map.center_lon,
+            lat: self.map.center_lat,
+            zoom: self.map.zoom,
+        }
+    }
+
+    /// Best-effort write of the current map position to the state file.
+    pub fn save_map_state(&self) {
+        self.map_persist().save(&self.state_path());
+    }
+
     /// Max zoom permitted by the active provider.
     pub fn max_zoom(&self) -> u8 {
         self.config

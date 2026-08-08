@@ -6,7 +6,9 @@ use crate::geo::{self, TILE_SIZE};
 use crate::tile::TileId;
 use gtk::gdk::prelude::GdkCairoContextExt;
 use gtk::gdk_pixbuf::{Pixbuf, PixbufLoader};
+use gtk::glib;
 use gtk::prelude::*;
+use std::cell::Cell;
 use std::rc::Rc;
 
 /// Update the download-queue indicator: show the count while tiles are pending,
@@ -44,6 +46,8 @@ pub fn build(
     {
         let state = state.clone();
         let downloader = downloader.clone();
+        // Last (zoom, pending) shown on the HUD, to skip redundant updates.
+        let last_hud = Rc::new(Cell::new((u8::MAX, usize::MAX)));
         area.set_draw_func(move |_area, cr, width, height| {
             // Hard edges: tiles are drawn 1:1 at integer coordinates, so any
             // antialiasing at rectangle borders only produces seams.
@@ -100,9 +104,20 @@ pub fn build(
                 }
             }
 
-            // Refresh the HUD to match what we just drew.
-            zoom_label.set_text(&z.to_string());
-            set_queue_label(&queue_label, st.inflight.len());
+            // Refresh the HUD to match what we just drew, but do it *after* the
+            // snapshot pass. Setting the zoom label (which lives inside the nav
+            // box) here would resize the nav mid-draw and make the overlaid
+            // buttons flicker/vanish; deferring to idle avoids that.
+            let pending = st.inflight.len();
+            if last_hud.get() != (z, pending) {
+                last_hud.set((z, pending));
+                let zoom_label = zoom_label.clone();
+                let queue_label = queue_label.clone();
+                glib::idle_add_local_once(move || {
+                    zoom_label.set_text(&z.to_string());
+                    set_queue_label(&queue_label, pending);
+                });
+            }
         });
     }
 
@@ -141,7 +156,10 @@ pub fn build(
     {
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         let state = state.clone();
+        let downloader = downloader.clone();
         let area_weak = area.downgrade();
+        // Accumulated (scaled) scroll delta; one whole unit == one zoom level.
+        let accum = Rc::new(Cell::new(0.0f64));
         scroll.connect_scroll(move |_, _dx, dy| {
             if dy == 0.0 {
                 return gtk::glib::Propagation::Proceed;
@@ -150,17 +168,33 @@ pub fn build(
                 return gtk::glib::Propagation::Proceed;
             };
             let mut st = state.borrow_mut();
+            let sens = st.config.general.scroll_sensitivity.clamp(0.05, 10.0);
             let (w, h) = (area.width() as f64, area.height() as f64);
             let (px, py) = st.last_pointer;
-            let max_zoom = st.max_zoom();
-            let new_zoom = if dy < 0.0 {
-                (st.map.zoom + 1).min(max_zoom)
-            } else {
-                st.map.zoom.saturating_sub(1)
-            };
-            st.map.zoom_around(px, py, w, h, new_zoom);
-            drop(st);
-            area.queue_draw();
+            let mut acc = accum.get() + dy * sens;
+            let mut changed = false;
+            // Scroll up (dy < 0) zooms in; down zooms out.
+            while acc <= -1.0 {
+                acc += 1.0;
+                let nz = (st.map.zoom + 1).min(st.max_zoom());
+                st.map.zoom_around(px, py, w, h, nz);
+                changed = true;
+            }
+            while acc >= 1.0 {
+                acc -= 1.0;
+                let nz = st.map.zoom.saturating_sub(1);
+                st.map.zoom_around(px, py, w, h, nz);
+                changed = true;
+            }
+            accum.set(acc);
+            if changed {
+                // The old zoom's queued tiles are useless now; drop them and
+                // let the redraw re-request the current view (served first).
+                st.inflight.clear();
+                drop(st);
+                downloader.clear_queue();
+                area.queue_draw();
+            }
             gtk::glib::Propagation::Stop
         });
         area.add_controller(scroll);

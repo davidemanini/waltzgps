@@ -5,6 +5,7 @@ mod cache;
 mod config;
 mod downloader;
 mod geo;
+mod persist;
 mod tile;
 mod ui;
 
@@ -41,9 +42,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::thread::spawn(move || cache.enforce_policy());
         }
 
-        let providers = Arc::new(config.providers.clone());
-        let downloader = Rc::new(Downloader::new(providers, cache));
+        let downloader = Rc::new(Downloader::new(config.providers.clone(), cache));
         let state = AppState::new(config, config_path);
+
+        // Restore the last-viewed position/zoom, if any.
+        {
+            let path = state.borrow().state_path();
+            if let Some(saved) = crate::persist::MapPersist::load(&path) {
+                let mut st = state.borrow_mut();
+                let max_zoom = st.max_zoom();
+                st.map.center_lon = saved.lon;
+                st.map.center_lat = saved.lat.clamp(-crate::geo::MAX_LAT, crate::geo::MAX_LAT);
+                st.map.zoom = saved.zoom.min(max_zoom);
+            }
+        }
 
         ui::window::build_ui(app, state, downloader);
     });
