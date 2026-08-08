@@ -157,6 +157,11 @@ pub fn cache_home() -> PathBuf {
     base_dir("XDG_CACHE_HOME", ".cache")
 }
 
+/// `$XDG_STATE_HOME` or `~/.local/state` (for transient state like last view).
+pub fn state_home() -> PathBuf {
+    base_dir("XDG_STATE_HOME", ".local/state")
+}
+
 fn base_dir(env: &str, fallback: &str) -> PathBuf {
     if let Some(val) = std::env::var_os(env) {
         if !val.is_empty() {

@@ -60,7 +60,7 @@ impl AppState {
 
     /// Path of the map-state file (last position/zoom).
     pub fn state_path(&self) -> std::path::PathBuf {
-        crate::persist::MapPersist::path(&self.config_path)
+        crate::persist::MapPersist::path()
     }
 
     /// Snapshot the current map view for persistence.

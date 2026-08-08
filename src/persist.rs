@@ -2,10 +2,13 @@
 //!
 //! Kept separate from [`crate::config::Config`] so the user's configured start
 //! position is not overwritten: this is "where I was", not "where I start".
-//! Written next to the config file as `state.toml`.
+//! Stored in the XDG state directory (`$XDG_STATE_HOME/waltzgps/state.toml`),
+//! which the spec designates for exactly this kind of persistent-but-transient
+//! data — not `$XDG_CONFIG_HOME`.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 
 /// Last-viewed map position, restored on the next launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,12 +19,9 @@ pub struct MapPersist {
 }
 
 impl MapPersist {
-    /// State-file path: `state.toml` alongside the config file.
-    pub fn path(config_path: &Path) -> PathBuf {
-        match config_path.parent() {
-            Some(dir) => dir.join("state.toml"),
-            None => PathBuf::from("state.toml"),
-        }
+    /// State-file path: `$XDG_STATE_HOME/waltzgps/state.toml`.
+    pub fn path() -> PathBuf {
+        crate::config::state_home().join("waltzgps").join("state.toml")
     }
 
     /// Load persisted state, or `None` if absent/unreadable/corrupt.
