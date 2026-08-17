@@ -3,6 +3,7 @@
 use crate::config::Config;
 use crate::downloader::TileKey;
 use crate::geo::MapState;
+use crate::persist::MapPersist;
 use gtk::gdk_pixbuf::Pixbuf;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -33,13 +34,13 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Config, config_path: PathBuf) -> SharedState {
-        let map = MapState::new(
-            config.general.start_lon,
-            config.general.start_lat,
-            config.general.start_zoom,
-        );
-        let active_provider = config.default_provider_index();
+    pub fn new(config: Config, persist: MapPersist, config_path: PathBuf) -> SharedState {
+        let map = MapState{
+	    center_lon: persist.lon,
+	    center_lat: persist.lat,
+	    zoom: persist.zoom
+	};
+        let active_provider = config.provider_index(persist.provider);
         Rc::new(RefCell::new(AppState {
             config,
             config_path,
@@ -69,6 +70,7 @@ impl AppState {
             lon: self.map.center_lon,
             lat: self.map.center_lat,
             zoom: self.map.zoom,
+	    provider: self.config.providers[self.active_provider].name.clone(),
         }
     }
 

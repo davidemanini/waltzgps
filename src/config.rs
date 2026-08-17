@@ -29,10 +29,6 @@ fn default_max_zoom() -> u8 {
 /// Startup position and default provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct General {
-    pub start_lat: f64,
-    pub start_lon: f64,
-    pub start_zoom: u8,
-    pub default_provider: String,
     /// Mouse-wheel zoom sensitivity: scroll deltas are scaled by this before
     /// accumulating toward a one-level zoom step. Lower = less sensitive.
     #[serde(default = "default_scroll_sensitivity")]
@@ -40,7 +36,7 @@ pub struct General {
 }
 
 fn default_scroll_sensitivity() -> f64 {
-    1.0
+    0.1
 }
 
 /// On-disk cache limits.
@@ -81,10 +77,6 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             general: General {
-                start_lat: 48.8566,
-                start_lon: 2.3522,
-                start_zoom: 12,
-                default_provider: "OpenStreetMap".into(),
                 scroll_sensitivity: 1.0,
             },
             providers: vec![
@@ -139,10 +131,10 @@ impl Config {
     }
 
     /// Index of the configured default provider (falls back to 0).
-    pub fn default_provider_index(&self) -> usize {
+    pub fn provider_index(&self, provider: String) -> usize {
         self.providers
             .iter()
-            .position(|p| p.name == self.general.default_provider)
+            .position(|p| p.name == provider)
             .unwrap_or(0)
     }
 }

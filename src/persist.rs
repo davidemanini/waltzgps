@@ -16,6 +16,7 @@ pub struct MapPersist {
     pub lon: f64,
     pub lat: f64,
     pub zoom: u8,
+    pub provider: String,
 }
 
 impl MapPersist {
@@ -27,7 +28,7 @@ impl MapPersist {
     /// Load persisted state, or `None` if absent/unreadable/corrupt.
     pub fn load(path: &Path) -> Option<MapPersist> {
         let text = std::fs::read_to_string(path).ok()?;
-        toml::from_str(&text).ok()
+        toml::from_str(&text).ok().map(|s: Self| s.validate())
     }
 
     /// Write the state file (best effort; errors are ignored).
@@ -40,5 +41,24 @@ impl MapPersist {
         if let Ok(text) = toml::to_string_pretty(self) {
             let _ = std::fs::write(path, text);
         }
+    }
+
+    fn validate(mut self) -> Self {
+	self.lat = self.lat.clamp(-crate::geo::MAX_LAT, crate::geo::MAX_LAT);
+	self.lon = self.lon.clamp(-180., 180.);
+	self.zoom = self.zoom.min(22);
+	self
+    }
+}
+
+impl Default for MapPersist {
+    fn default() -> Self {
+	MapPersist {
+	    // Wien
+	    lon: 16.3686,
+	    lat: 48.2068,
+	    zoom: 12,
+	    provider: "OpenStreetMap".into(),
+	}
     }
 }

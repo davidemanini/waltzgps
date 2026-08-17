@@ -55,10 +55,6 @@ pub struct MapState {
 }
 
 impl MapState {
-    pub fn new(center_lon: f64, center_lat: f64, zoom: u8) -> Self {
-        Self { center_lon, center_lat, zoom }
-    }
-
     /// Centre expressed in world pixels at the current zoom.
     pub fn center_world(&self) -> (f64, f64) {
         lonlat_to_world_px(self.center_lon, self.center_lat, self.zoom)
