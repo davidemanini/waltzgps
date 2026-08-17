@@ -41,7 +41,7 @@ pub fn world_px_to_lonlat(x: f64, y: f64, zoom: u8) -> (f64, f64) {
 }
 
 /// Convert lon/lat to fractional tile coordinates at `zoom`.
-pub fn lonlat_to_tile(lon: f64, lat: f64, zoom: u8) -> (f64, f64) {
+pub fn _lonlat_to_tile(lon: f64, lat: f64, zoom: u8) -> (f64, f64) {
     let (x, y) = lonlat_to_world_px(lon, lat, zoom);
     (x / TILE_SIZE, y / TILE_SIZE)
 }
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn origin_maps_to_center_tile_at_z1() {
         // lon/lat (0,0) at zoom 1 sits at tile (1,1).
-        let (tx, ty) = lonlat_to_tile(0.0, 0.0, 1);
+        let (tx, ty) = _lonlat_to_tile(0.0, 0.0, 1);
         assert!((tx - 1.0).abs() < 1e-9, "tx={tx}");
         assert!((ty - 1.0).abs() < 1e-9, "ty={ty}");
     }
@@ -119,7 +119,7 @@ mod tests {
     fn known_city_tile() {
         // London (-0.1276, 51.5072) at zoom 12 -> tile (2046, 1362), per the
         // standard slippy-map formula floor((lon+180)/360 * 2^z).
-        let (tx, ty) = lonlat_to_tile(-0.1276, 51.5072, 12);
+        let (tx, ty) = _lonlat_to_tile(-0.1276, 51.5072, 12);
         assert_eq!(tx.floor() as i64, 2046);
         assert_eq!(ty.floor() as i64, 1362);
     }
