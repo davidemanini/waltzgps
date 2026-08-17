@@ -13,19 +13,28 @@ use crate::app_state::AppState;
 use crate::cache::Cache;
 use crate::config::Config;
 use crate::downloader::Downloader;
+use clap::Parser;
 use gtk::prelude::*;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
 const APP_ID: &str = "org.waltzgps.WaltzGPS";
 
+/// WaltzGPS — a GTK4 Tile Map Service / Web-Mercator map viewer.
+#[derive(Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Path to the configuration file
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Resolve config path (`--config <path>` or the XDG default) and load it,
-    // writing defaults on first run.
-    let config_path = match parse_config_arg() {
-        Some(p) => std::path::PathBuf::from(p),
-        None => Config::default_path(),
-    };
+    // Parse our own args before GTK gets a chance to consume them.
+    let cli = Cli::parse();
+
+    let config_path = cli.config.unwrap_or_else(Config::default_path);
     let config = Rc::new(Config::load(&config_path)?);
     let config_path = Rc::new(config_path);
 
@@ -65,16 +74,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Minimal `--config <path>` / `--config=<path>` parser.
-fn parse_config_arg() -> Option<String> {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        if let Some(rest) = arg.strip_prefix("--config=") {
-            return Some(rest.to_string());
-        }
-        if arg == "--config" {
-            return args.next();
-        }
-    }
-    None
-}
+

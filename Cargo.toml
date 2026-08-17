@@ -15,6 +15,7 @@ toml = "0.8"
 # (`glib::spawn_future_local`). `futures-util` provides `StreamExt::next`.
 futures-channel = "0.3"
 futures-util = "0.3"
+clap = { version = "4.6.6", features = ["derive"] }
 
 # Tile downloads use the system `curl` binary via std::process, so no HTTP/TLS
 # crate dependency is required. XDG paths and error handling use std only.
