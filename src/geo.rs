@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn zoom_around_keeps_point_fixed() {
-        let mut s = MapState::new(2.3522, 48.8566, 12);
+        let mut s = MapState { center_lon: 2.3522, center_lat: 48.8566, zoom: 12 };
         let (w, h) = (800.0, 600.0);
         let (sx, sy) = (300.0, 200.0);
         let before = s.screen_to_lonlat(sx, sy, w, h);

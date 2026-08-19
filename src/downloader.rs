@@ -76,6 +76,9 @@ pub struct Downloader {
     providers: Arc<Mutex<Vec<Provider>>>,
     /// Receiver of finished fetches, taken once by the UI's result pump.
     results: RefCell<Option<UnboundedReceiver<TileResult>>>,
+    /// Disk cache shared with the workers; exposed so the UI can update its
+    /// policy live (see [`Cache::update_policy`]).
+    cache: Arc<Cache>,
 }
 
 impl Downloader {
@@ -115,12 +118,17 @@ impl Downloader {
             });
         }
 
-        Downloader { queue, providers, results: RefCell::new(Some(res_rx)) }
+        Downloader { queue, providers, results: RefCell::new(Some(res_rx)), cache }
     }
 
     /// Enqueue a tile for fetching (returns immediately).
     pub fn request(&self, key: TileKey) {
         self.queue.push(key);
+    }
+
+    /// The shared disk cache, so callers can update its policy live.
+    pub fn cache(&self) -> Arc<Cache> {
+        self.cache.clone()
     }
 
     /// Replace the worker pool's provider list (after the config was edited).

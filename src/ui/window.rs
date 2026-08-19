@@ -10,7 +10,7 @@ use gtk::glib;
 use gtk::glib::prelude::*;
 use gtk::prelude::*;
 use gtk::{gio, DrawingArea};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Pixels moved per keyboard/button pan step.
@@ -134,12 +134,11 @@ fn build_controls(
     let menu_model = gio::Menu::new();
     menu_model.append_section(None, &provider_section);
     let actions_section = gio::Menu::new();
-    actions_section.append(Some("Edit providers…"), Some("win.edit-providers"));
-    actions_section.append(Some("Settings…"), Some("win.settings"));
+    actions_section.append(Some("Preferences…"), Some("win.preferences"));
     menu_model.append_section(None, &actions_section);
 
-    // Callback the dialogs invoke after mutating the provider list.
-    let on_change: Rc<dyn Fn()> = {
+    // Callback the preferences dialog invokes after a successful Apply/OK.
+    let on_commit: Rc<dyn Fn()> = {
         let provider_section = provider_section.clone();
         let state = state.clone();
         let area = area.clone();
@@ -162,28 +161,39 @@ fn build_controls(
         })
     };
 
-    // "Edit providers…" action.
-    let edit_action = gio::SimpleAction::new("edit-providers", None);
+    // "Preferences…" action: non-modal, so a second activation while it's
+    // already open re-presents the existing window instead of opening a
+    // second editor with a second draft.
+    let preferences_window: Rc<RefCell<Option<gtk::Window>>> = Rc::new(RefCell::new(None));
+    let preferences_action = gio::SimpleAction::new("preferences", None);
     {
         let window = window.clone();
         let state = state.clone();
-        let on_change = on_change.clone();
-        edit_action.connect_activate(move |_, _| {
-            crate::ui::dialogs::show_provider_editor(&window, state.clone(), on_change.clone());
+        let cache = downloader.cache();
+        let on_commit = on_commit.clone();
+        let guard = preferences_window.clone();
+        preferences_action.connect_activate(move |_, _| {
+            if let Some(existing) = guard.borrow().as_ref() {
+                existing.present();
+                return;
+            }
+            let dlg = crate::ui::preferences::show_preferences(
+                &window,
+                state.clone(),
+                cache.clone(),
+                on_commit.clone(),
+            );
+            {
+                let guard = guard.clone();
+                dlg.connect_close_request(move |_| {
+                    *guard.borrow_mut() = None;
+                    glib::Propagation::Proceed
+                });
+            }
+            *guard.borrow_mut() = Some(dlg);
         });
     }
-    window.add_action(&edit_action);
-
-    // "Settings…" action.
-    let settings_action = gio::SimpleAction::new("settings", None);
-    {
-        let window = window.clone();
-        let state = state.clone();
-        settings_action.connect_activate(move |_, _| {
-            crate::ui::dialogs::show_settings(&window, state.clone());
-        });
-    }
-    window.add_action(&settings_action);
+    window.add_action(&preferences_action);
 
     let menu_button = gtk::MenuButton::new();
     menu_button.set_icon_name("open-menu-symbolic");
