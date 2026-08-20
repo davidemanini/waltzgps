@@ -8,6 +8,8 @@
 //! widget-wiring code.
 
 use gtk::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
 
 pub enum FieldKind<T> {
     Text { get: fn(&T) -> String, set: fn(&mut T, String) },
@@ -79,6 +81,10 @@ enum FieldWidget<T> {
 pub struct FieldForm<T> {
     pub grid: gtk::Grid,
     widgets: Vec<FieldWidget<T>>,
+    /// Set around programmatic updates ([`load`](FieldForm::load)) so
+    /// [`connect_changed`](FieldForm::connect_changed) can tell those apart
+    /// from genuine user edits.
+    suppress_changed: Rc<Cell<bool>>,
 }
 
 impl<T> FieldForm<T> {
@@ -133,11 +139,37 @@ impl<T> FieldForm<T> {
             widgets.push(widget);
         }
 
-        FieldForm { grid, widgets }
+        FieldForm { grid, widgets, suppress_changed: Rc::new(Cell::new(false)) }
+    }
+
+    /// Invoke `f` whenever the user edits any widget's value. Programmatic
+    /// updates via [`load`](FieldForm::load) do not trigger it.
+    pub fn connect_changed(&self, f: Rc<dyn Fn()>) {
+        for widget in &self.widgets {
+            let f = f.clone();
+            let suppress = self.suppress_changed.clone();
+            let fire = move || {
+                if !suppress.get() {
+                    f();
+                }
+            };
+            match widget {
+                FieldWidget::Text(entry, ..) | FieldWidget::OptionalText(entry, ..) => {
+                    entry.connect_changed(move |_| fire());
+                }
+                FieldWidget::Bool(sw, ..) => {
+                    sw.connect_active_notify(move |_| fire());
+                }
+                FieldWidget::F64Spin(spin, ..) | FieldWidget::U64Spin(spin, ..) => {
+                    spin.connect_value_changed(move |_| fire());
+                }
+            }
+        }
     }
 
     /// Repopulate the widgets from `value` (e.g. after a list selection changes).
     pub fn load(&self, value: &T) {
+        self.suppress_changed.set(true);
         for widget in &self.widgets {
             match widget {
                 FieldWidget::Text(entry, get, _) => entry.set_text(&get(value)),
@@ -149,6 +181,7 @@ impl<T> FieldForm<T> {
                 FieldWidget::U64Spin(spin, get, _) => spin.set_value(get(value) as f64),
             }
         }
+        self.suppress_changed.set(false);
     }
 
     /// Pull the widgets' current values back into `value`.

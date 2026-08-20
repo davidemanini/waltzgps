@@ -94,8 +94,31 @@ pub fn show_preferences(
     status.set_halign(gtk::Align::Start);
     status.set_wrap(true);
 
+    // Bottom bar buttons, created early so `mark_dirty` (and the provider-tab
+    // handlers below) can reference `apply_button`'s sensitivity.
+    let cancel_button = gtk::Button::with_label("Cancel");
+    let apply_button = gtk::Button::with_label("Apply");
+    let ok_button = gtk::Button::with_label("OK");
+    ok_button.add_css_class("suggested-action");
+    // Nothing to apply until something is actually edited.
+    apply_button.set_sensitive(false);
+
+    // Tracks whether any setting has been touched since the dialog opened
+    // (or since the last successful Apply/OK). Drives Apply's sensitivity
+    // and whether OK needs to do anything at all.
+    let dirty: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let mark_dirty: Rc<dyn Fn()> = {
+        let dirty = dirty.clone();
+        let apply_button = apply_button.clone();
+        Rc::new(move || {
+            dirty.set(true);
+            apply_button.set_sensitive(true);
+        })
+    };
+
     // --- General tab -------------------------------------------------
     let general_form = Rc::new(FieldForm::<Config>::build(&general_fields(), &draft.borrow()));
+    general_form.connect_changed(mark_dirty.clone());
     let general_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
     general_page.set_margin_top(12);
     general_page.set_margin_bottom(12);
@@ -117,6 +140,7 @@ pub fn show_preferences(
     let placeholder = Provider { name: String::new(), url: String::new(), tms: false, max_zoom: 19 };
     let initial_provider = draft.borrow().providers.first().cloned().unwrap_or(placeholder);
     let provider_form = Rc::new(FieldForm::<Provider>::build(&provider_fields(), &initial_provider));
+    provider_form.connect_changed(mark_dirty.clone());
 
     let add_button = gtk::Button::with_label("Add");
     let remove_button = gtk::Button::with_label("Remove");
@@ -148,6 +172,7 @@ pub fn show_preferences(
     {
         let draft = draft.clone();
         let list = list.clone();
+        let mark_dirty = mark_dirty.clone();
         add_button.connect_clicked(move |_| {
             draft.borrow_mut().providers.push(Provider {
                 name: "New provider".into(),
@@ -160,6 +185,7 @@ pub fn show_preferences(
             if let Some(row) = list.row_at_index(last) {
                 list.select_row(Some(&row));
             }
+            mark_dirty();
         });
     }
 
@@ -168,6 +194,7 @@ pub fn show_preferences(
         let draft = draft.clone();
         let list = list.clone();
         let status = status.clone();
+        let mark_dirty = mark_dirty.clone();
         remove_button.connect_clicked(move |_| {
             let Some(row) = list.selected_row() else {
                 status.set_text("Select a provider to remove.");
@@ -189,6 +216,7 @@ pub fn show_preferences(
             if let Some(row) = list.row_at_index(sel) {
                 list.select_row(Some(&row));
             }
+            mark_dirty();
         });
     }
 
@@ -199,6 +227,7 @@ pub fn show_preferences(
         let list = list.clone();
         let status = status.clone();
         let draft_active_provider = draft_active_provider.clone();
+        let mark_dirty = mark_dirty.clone();
         Rc::new(move |up: bool| {
             let Some(row) = list.selected_row() else {
                 status.set_text("Select a provider to move.");
@@ -230,6 +259,7 @@ pub fn show_preferences(
             if let Some(row) = list.row_at_index(target as i32) {
                 list.select_row(Some(&row));
             }
+            mark_dirty();
         })
     };
     {
@@ -248,6 +278,7 @@ pub fn show_preferences(
         let list = list.clone();
         let status = status.clone();
         let provider_form = provider_form.clone();
+        let mark_dirty = mark_dirty.clone();
         apply_list_button.connect_clicked(move |_| {
             let Some(row) = list.selected_row() else {
                 status.set_text("Select a provider to edit.");
@@ -266,6 +297,7 @@ pub fn show_preferences(
             if let Some(row) = list.row_at_index(idx as i32) {
                 list.select_row(Some(&row));
             }
+            mark_dirty();
         });
     }
 
@@ -309,6 +341,8 @@ pub fn show_preferences(
         let status = status.clone();
         let cache = cache.clone();
         let on_commit = on_commit.clone();
+        let dirty = dirty.clone();
+        let apply_button = apply_button.clone();
         Rc::new(move || {
             if let Some(row) = list.selected_row() {
                 let idx = row.index() as usize;
@@ -349,14 +383,11 @@ pub fn show_preferences(
                 std::thread::spawn(move || cache.enforce_policy());
             }
             on_commit();
+            dirty.set(false);
+            apply_button.set_sensitive(false);
             true
         })
     };
-
-    let cancel_button = gtk::Button::with_label("Cancel");
-    let apply_button = gtk::Button::with_label("Apply");
-    let ok_button = gtk::Button::with_label("OK");
-    ok_button.add_css_class("suggested-action");
 
     {
         let window = window.clone();
@@ -371,8 +402,10 @@ pub fn show_preferences(
     {
         let window = window.clone();
         let commit = commit.clone();
+        let dirty = dirty.clone();
         ok_button.connect_clicked(move |_| {
-            if commit() {
+            // Nothing to do: OK behaves like Cancel when nothing was touched.
+            if !dirty.get() || commit() {
                 window.close();
             }
         });
