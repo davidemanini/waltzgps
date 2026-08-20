@@ -29,8 +29,8 @@ fn general_fields() -> Vec<Field<Config>> {
             |c| c.general.scroll_sensitivity,
             |c, v| c.general.scroll_sensitivity = v,
         ),
-        Field::optional_text(
-            "Cache directory",
+        Field::path(
+            "Cache directory (leave empty for default)",
             |c| c.cache.directory.clone(),
             |c, v| c.cache.directory = v,
         ),
@@ -117,7 +117,8 @@ pub fn show_preferences(
     };
 
     // --- General tab -------------------------------------------------
-    let general_form = Rc::new(FieldForm::<Config>::build(&general_fields(), &draft.borrow()));
+    let general_form =
+        Rc::new(FieldForm::<Config>::build(&general_fields(), &draft.borrow(), Some(&window)));
     general_form.connect_changed(mark_dirty.clone());
     let general_page = gtk::Box::new(gtk::Orientation::Vertical, 12);
     general_page.set_margin_top(12);
@@ -139,7 +140,8 @@ pub fn show_preferences(
 
     let placeholder = Provider { name: String::new(), url: String::new(), tms: false, max_zoom: 19 };
     let initial_provider = draft.borrow().providers.first().cloned().unwrap_or(placeholder);
-    let provider_form = Rc::new(FieldForm::<Provider>::build(&provider_fields(), &initial_provider));
+    let provider_form =
+        Rc::new(FieldForm::<Provider>::build(&provider_fields(), &initial_provider, Some(&window)));
     provider_form.connect_changed(mark_dirty.clone());
 
     let add_button = gtk::Button::with_label("Add");

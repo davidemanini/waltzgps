@@ -8,6 +8,9 @@ license = "MIT"
 [dependencies]
 # UI toolkit. `gtk` is the crate `gtk4` renamed so the code reads `gtk::...`.
 gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+# Used directly for the cache-directory file-chooser dialog's async callback
+# types (gtk4 depends on it transitively but doesn't re-export it).
+gio = "0.20"
 # Config (de)serialisation.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"

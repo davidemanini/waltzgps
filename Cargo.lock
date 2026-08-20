@@ -826,6 +826,7 @@ dependencies = [
  "clap",
  "futures-channel",
  "futures-util",
+ "gio",
  "gtk4",
  "serde",
  "toml 0.8.23",

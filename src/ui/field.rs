@@ -7,8 +7,10 @@
 //! `Config` or `Provider` only requires one new `Field` entry — no new
 //! widget-wiring code.
 
+//use gio::prelude::*;
 use gtk::prelude::*;
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 pub enum FieldKind<T> {
@@ -17,6 +19,10 @@ pub enum FieldKind<T> {
     Bool { get: fn(&T) -> bool, set: fn(&mut T, bool) },
     F64Spin { min: f64, max: f64, step: f64, digits: u32, get: fn(&T) -> f64, set: fn(&mut T, f64) },
     U64Spin { min: f64, max: f64, step: f64, get: fn(&T) -> u64, set: fn(&mut T, u64) },
+    /// A filesystem directory, edited via a text entry plus a "Browse…"
+    /// button that opens a native folder chooser. An empty entry means `None`
+    /// (fall back to whatever default the caller uses).
+    Path { get: fn(&T) -> Option<PathBuf>, set: fn(&mut T, Option<PathBuf>) },
 }
 
 pub struct Field<T> {
@@ -29,6 +35,7 @@ impl<T> Field<T> {
         Field { label, kind: FieldKind::Text { get, set } }
     }
 
+    #[allow(dead_code)]
     pub fn optional_text(
         label: &'static str,
         get: fn(&T) -> Option<String>,
@@ -64,6 +71,14 @@ impl<T> Field<T> {
     ) -> Self {
         Field { label, kind: FieldKind::U64Spin { min, max, step, get, set } }
     }
+
+    pub fn path(
+        label: &'static str,
+        get: fn(&T) -> Option<PathBuf>,
+        set: fn(&mut T, Option<PathBuf>),
+    ) -> Self {
+        Field { label, kind: FieldKind::Path { get, set } }
+    }
 }
 
 /// A built widget bound to one field's getter/setter.
@@ -73,6 +88,7 @@ enum FieldWidget<T> {
     Bool(gtk::Switch, fn(&T) -> bool, fn(&mut T, bool)),
     F64Spin(gtk::SpinButton, fn(&T) -> f64, fn(&mut T, f64)),
     U64Spin(gtk::SpinButton, fn(&T) -> u64, fn(&mut T, u64)),
+    Path(gtk::Entry, fn(&T) -> Option<PathBuf>, fn(&mut T, Option<PathBuf>)),
 }
 
 /// A form built from a list of [`Field`]s: a `Grid` of label/widget rows,
@@ -88,7 +104,10 @@ pub struct FieldForm<T> {
 }
 
 impl<T> FieldForm<T> {
-    pub fn build(fields: &[Field<T>], initial: &T) -> FieldForm<T> {
+    /// `parent` is used to make the folder-chooser dialog opened by a
+    /// [`FieldKind::Path`] field transient for the preferences window; pass
+    /// `None` if the form has no such field.
+    pub fn build(fields: &[Field<T>], initial: &T, parent: Option<&gtk::Window>) -> FieldForm<T> {
         let grid = gtk::Grid::new();
         grid.set_row_spacing(8);
         grid.set_column_spacing(8);
@@ -135,6 +154,46 @@ impl<T> FieldForm<T> {
                     grid.attach(&spin, 1, row as i32, 1, 1);
                     FieldWidget::U64Spin(spin, get, set)
                 }
+                FieldKind::Path { get, set } => {
+                    let entry = gtk::Entry::new();
+                    entry.set_hexpand(true);
+                    if let Some(p) = get(initial) {
+                        entry.set_text(&p.display().to_string());
+                    }
+                    let browse = gtk::Button::with_label("Browse…");
+                    {
+                        let entry = entry.clone();
+                        let parent = parent.cloned();
+                        browse.connect_clicked(move |_| {
+                            let dialog =
+                                gtk::FileDialog::builder().title("Select Directory").build();
+                            let current = entry.text();
+                            if !current.is_empty() {
+                                dialog.set_initial_folder(Some(&gio::File::for_path(
+                                    current.as_str(),
+                                )));
+                            }
+                            let entry = entry.clone();
+                            dialog.select_folder(
+                                parent.as_ref(),
+                                None::<&gio::Cancellable>,
+                                move |result| {
+                                    if let Ok(file) = result {
+                                        if let Some(path) = file.path() {
+                                            entry.set_text(&path.display().to_string());
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                    hbox.set_hexpand(true);
+                    hbox.append(&entry);
+                    hbox.append(&browse);
+                    grid.attach(&hbox, 1, row as i32, 1, 1);
+                    FieldWidget::Path(entry, get, set)
+                }
             };
             widgets.push(widget);
         }
@@ -154,7 +213,7 @@ impl<T> FieldForm<T> {
                 }
             };
             match widget {
-                FieldWidget::Text(entry, ..) | FieldWidget::OptionalText(entry, ..) => {
+                FieldWidget::Text(entry, ..) | FieldWidget::OptionalText(entry, ..) | FieldWidget::Path(entry, ..) => {
                     entry.connect_changed(move |_| fire());
                 }
                 FieldWidget::Bool(sw, ..) => {
@@ -179,6 +238,9 @@ impl<T> FieldForm<T> {
                 FieldWidget::Bool(sw, get, _) => sw.set_active(get(value)),
                 FieldWidget::F64Spin(spin, get, _) => spin.set_value(get(value)),
                 FieldWidget::U64Spin(spin, get, _) => spin.set_value(get(value) as f64),
+                FieldWidget::Path(entry, get, _) => {
+                    entry.set_text(&get(value).map(|p| p.display().to_string()).unwrap_or_default())
+                }
             }
         }
         self.suppress_changed.set(false);
@@ -192,6 +254,10 @@ impl<T> FieldForm<T> {
                 FieldWidget::OptionalText(entry, _, set) => {
                     let text = entry.text().trim().to_string();
                     set(value, if text.is_empty() { None } else { Some(text) });
+                }
+                FieldWidget::Path(entry, _, set) => {
+                    let text = entry.text().trim().to_string();
+                    set(value, if text.is_empty() { None } else { Some(PathBuf::from(text)) });
                 }
                 FieldWidget::Bool(sw, _, set) => set(value, sw.is_active()),
                 FieldWidget::F64Spin(spin, _, set) => set(value, spin.value()),

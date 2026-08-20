@@ -44,7 +44,7 @@ fn default_scroll_sensitivity() -> f64 {
 pub struct CachePolicy {
     /// Cache directory; defaults to the XDG cache dir when omitted.
     #[serde(default)]
-    pub directory: Option<String>,
+    pub directory: Option<PathBuf>,
     #[serde(default = "default_max_size_mb")]
     pub max_size_mb: u64,
     #[serde(default = "default_max_age_days")]

@@ -161,14 +161,14 @@ fn sanitize(name: &str) -> String {
         .collect()
 }
 
-/// Expand a leading `~/` to the user's home directory.
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
+/// Expand a leading `~` component to the user's home directory.
+fn expand_tilde(path: &Path) -> PathBuf {
+    if let Ok(rest) = path.strip_prefix("~") {
         if let Some(home) = std::env::var_os("HOME") {
             return PathBuf::from(home).join(rest);
         }
     }
-    PathBuf::from(path)
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -177,7 +177,7 @@ mod tests {
 
     fn policy(dir: &Path) -> CachePolicy {
         CachePolicy {
-            directory: Some(dir.to_string_lossy().into_owned()),
+            directory: Some(dir.to_path_buf()),
             max_size_mb: 500,
             max_age_days: 30,
         }
