@@ -13,17 +13,57 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
     pub name: String,
-    /// URL template using `{z}`/`{x}`/`{y}` placeholders.
+    /// URL template using `{z}`/`{x}`/`{y}`/`{api_key}` placeholders.
     pub url: String,
     /// When true, use TMS Y-axis convention (flipped) instead of XYZ.
     #[serde(default)]
     pub tms: bool,
     #[serde(default = "default_max_zoom")]
     pub max_zoom: u8,
+    /// Where to obtain `{api_key}`'s value, if the URL template uses it.
+    #[serde(default)]
+    pub api_key_source: Option<ApiKeySource>,
+    /// Extra HTTP headers sent with every tile request for this provider.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<Header>,
+}
+
+impl Default for Provider {
+    fn default() -> Self {
+        Provider {
+            name: String::new(),
+            url: String::new(),
+            tms: false,
+            max_zoom: default_max_zoom(),
+            api_key_source: None,
+            headers: Vec::new(),
+        }
+    }
 }
 
 fn default_max_zoom() -> u8 {
     19
+}
+
+/// Where a provider's API key comes from. At most one source is active at
+/// a time (enforced by construction, since this is an enum rather than
+/// three separate optional fields).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ApiKeySource {
+    /// Typed directly into the config/UI.
+    Literal(String),
+    /// Read the entire file contents (trimmed) each time the key is resolved.
+    File(PathBuf),
+    /// Run via a shell, capture trimmed stdout.
+    Command(String),
+}
+
+/// A custom HTTP header sent with a provider's tile requests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Header {
+    pub name: String,
+    pub value: String,
 }
 
 /// Startup position and default provider.
@@ -85,12 +125,14 @@ impl Default for Config {
                     url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png".into(),
                     tms: false,
                     max_zoom: 19,
+                    ..Provider::default()
                 },
                 Provider {
                     name: "OpenTopoMap".into(),
                     url: "https://a.tile.opentopomap.org/{z}/{x}/{y}.png".into(),
                     tms: false,
                     max_zoom: 17,
+                    ..Provider::default()
                 },
             ],
             cache: CachePolicy::default(),
@@ -111,6 +153,21 @@ impl Config {
             let cfg: Config = toml::from_str(&text)?;
             if cfg.providers.is_empty() {
                 return Err("config has no providers".into());
+            }
+            for p in &cfg.providers {
+                if let Some(src) = &p.api_key_source {
+                    let empty = match src {
+                        ApiKeySource::Literal(s) => s.trim().is_empty(),
+                        ApiKeySource::File(path) => path.as_os_str().is_empty(),
+                        ApiKeySource::Command(cmd) => cmd.trim().is_empty(),
+                    };
+                    if empty {
+                        return Err(
+                            format!("provider '{}' has an empty api_key_source value", p.name)
+                                .into(),
+                        );
+                    }
+                }
             }
             Ok(cfg)
         } else {
@@ -164,4 +221,60 @@ fn base_dir(env: &str, fallback: &str) -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     home.join(fallback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn provider_with(source: ApiKeySource) -> Provider {
+        Provider {
+            name: "t".into(),
+            url: "https://s/{z}/{x}/{y}.png?key={api_key}".into(),
+            api_key_source: Some(source),
+            headers: vec![Header { name: "X-Custom".into(), value: "abc".into() }],
+            ..Provider::default()
+        }
+    }
+
+    fn roundtrip(p: Provider) -> Provider {
+        let toml_text = toml::to_string_pretty(&p).unwrap();
+        toml::from_str(&toml_text).unwrap()
+    }
+
+    #[test]
+    fn roundtrips_literal_api_key_source() {
+        let p = provider_with(ApiKeySource::Literal("secret".into()));
+        let back = roundtrip(p);
+        assert!(matches!(back.api_key_source, Some(ApiKeySource::Literal(s)) if s == "secret"));
+        assert_eq!(back.headers, vec![Header { name: "X-Custom".into(), value: "abc".into() }]);
+    }
+
+    #[test]
+    fn roundtrips_file_api_key_source() {
+        let p = provider_with(ApiKeySource::File(PathBuf::from("/tmp/key.txt")));
+        let back = roundtrip(p);
+        assert!(
+            matches!(back.api_key_source, Some(ApiKeySource::File(ref path)) if path == Path::new("/tmp/key.txt"))
+        );
+    }
+
+    #[test]
+    fn roundtrips_command_api_key_source() {
+        let p = provider_with(ApiKeySource::Command("echo abc".into()));
+        let back = roundtrip(p);
+        assert!(matches!(back.api_key_source, Some(ApiKeySource::Command(c)) if c == "echo abc"));
+    }
+
+    #[test]
+    fn provider_without_api_key_source_omits_it() {
+        let p = Provider {
+            name: "t".into(),
+            url: "https://s/{z}/{x}/{y}.png".into(),
+            ..Provider::default()
+        };
+        let back = roundtrip(p);
+        assert!(back.api_key_source.is_none());
+        assert!(back.headers.is_empty());
+    }
 }

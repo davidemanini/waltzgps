@@ -9,7 +9,9 @@
 use crate::app_state::SharedState;
 use crate::cache::Cache;
 use crate::config::{Config, Provider};
+use crate::ui::api_key_field::ApiKeySourceField;
 use crate::ui::field::{Field, FieldForm};
+use crate::ui::header_field::HeaderListField;
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -68,6 +70,22 @@ fn provider_fields() -> Vec<Field<Provider>> {
             |p, v| p.max_zoom = v as u8,
         ),
     ]
+}
+
+/// True if `p` fails validation: missing name/URL, or an API key source
+/// selected with an empty value. Mutual exclusivity of the three sources
+/// needs no check here — it's structurally guaranteed by `ApiKeySource`
+/// being an enum.
+fn provider_invalid(p: &Provider) -> bool {
+    if p.name.is_empty() || p.url.is_empty() {
+        return true;
+    }
+    match &p.api_key_source {
+        Some(crate::config::ApiKeySource::Literal(s)) => s.is_empty(),
+        Some(crate::config::ApiKeySource::File(path)) => path.as_os_str().is_empty(),
+        Some(crate::config::ApiKeySource::Command(c)) => c.is_empty(),
+        None => false,
+    }
 }
 
 /// Open the preferences window. `cache` is updated live on commit; `on_commit`
@@ -138,11 +156,18 @@ pub fn show_preferences(
     scroller.set_vexpand(true);
     scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
 
-    let placeholder = Provider { name: String::new(), url: String::new(), tms: false, max_zoom: 19 };
-    let initial_provider = draft.borrow().providers.first().cloned().unwrap_or(placeholder);
+    let initial_provider = draft.borrow().providers.first().cloned().unwrap_or_default();
     let provider_form =
         Rc::new(FieldForm::<Provider>::build(&provider_fields(), &initial_provider, Some(&window)));
     provider_form.connect_changed(mark_dirty.clone());
+
+    let api_key_field = Rc::new(ApiKeySourceField::build(Some(&window)));
+    api_key_field.load(&initial_provider);
+    api_key_field.connect_changed(mark_dirty.clone());
+
+    let header_field = Rc::new(HeaderListField::build());
+    header_field.load(&initial_provider);
+    header_field.connect_changed(mark_dirty.clone());
 
     let add_button = gtk::Button::with_label("Add");
     let remove_button = gtk::Button::with_label("Remove");
@@ -156,11 +181,15 @@ pub fn show_preferences(
     {
         let draft = draft.clone();
         let provider_form = provider_form.clone();
+        let api_key_field = api_key_field.clone();
+        let header_field = header_field.clone();
         list.connect_row_selected(move |_, row| {
             let Some(row) = row else { return };
             let idx = row.index() as usize;
             if let Some(p) = draft.borrow().providers.get(idx) {
                 provider_form.load(p);
+                api_key_field.load(p);
+                header_field.load(p);
             }
         });
     }
@@ -179,8 +208,8 @@ pub fn show_preferences(
             draft.borrow_mut().providers.push(Provider {
                 name: "New provider".into(),
                 url: "https://host/{z}/{x}/{y}.png".into(),
-                tms: false,
                 max_zoom: 19,
+                ..Provider::default()
             });
             let last = draft.borrow().providers.len() as i32 - 1;
             refresh_list(&list, &draft);
@@ -280,6 +309,8 @@ pub fn show_preferences(
         let list = list.clone();
         let status = status.clone();
         let provider_form = provider_form.clone();
+        let api_key_field = api_key_field.clone();
+        let header_field = header_field.clone();
         let mark_dirty = mark_dirty.clone();
         apply_list_button.connect_clicked(move |_| {
             let Some(row) = list.selected_row() else {
@@ -289,8 +320,12 @@ pub fn show_preferences(
             let idx = row.index() as usize;
             let Some(mut p) = draft.borrow().providers.get(idx).cloned() else { return };
             provider_form.store(&mut p);
-            if p.name.is_empty() || p.url.is_empty() {
-                status.set_text("Name and URL are required.");
+            api_key_field.store(&mut p);
+            header_field.store(&mut p);
+            if provider_invalid(&p) {
+                status.set_text(
+                    "Name and URL are required, and a selected API key source needs a value.",
+                );
                 return;
             }
             draft.borrow_mut().providers[idx] = p;
@@ -306,6 +341,14 @@ pub fn show_preferences(
     let form_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
     form_box.set_hexpand(true);
     form_box.append(&provider_form.grid);
+
+    let api_key_frame = gtk::Frame::new(Some("API key"));
+    api_key_frame.set_child(Some(api_key_field.widget()));
+    form_box.append(&api_key_frame);
+
+    let headers_frame = gtk::Frame::new(Some("Custom headers"));
+    headers_frame.set_child(Some(header_field.widget()));
+    form_box.append(&headers_frame);
 
     let list_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     list_buttons.set_halign(gtk::Align::End);
@@ -339,6 +382,8 @@ pub fn show_preferences(
         let draft_active_provider = draft_active_provider.clone();
         let list = list.clone();
         let provider_form = provider_form.clone();
+        let api_key_field = api_key_field.clone();
+        let header_field = header_field.clone();
         let general_form = general_form.clone();
         let status = status.clone();
         let cache = cache.clone();
@@ -351,6 +396,8 @@ pub fn show_preferences(
                 let existing = draft.borrow().providers.get(idx).cloned();
                 if let Some(mut p) = existing {
                     provider_form.store(&mut p);
+                    api_key_field.store(&mut p);
+                    header_field.store(&mut p);
                     draft.borrow_mut().providers[idx] = p;
                 }
             }
@@ -359,9 +406,10 @@ pub fn show_preferences(
             general_form.store(&mut cfg);
 
             if cfg.providers.is_empty()
-                || cfg.providers.iter().any(|p| p.name.is_empty() || p.url.is_empty())
-            {
-                status.set_text("Every provider needs a non-empty name and URL.");
+                || cfg.providers.iter().any(provider_invalid) {
+                status.set_text(
+                    "Every provider needs a non-empty name and URL, and a selected API key source needs a value.",
+                );
                 return false;
             }
 
