@@ -3,7 +3,7 @@ name = "waltzgps"
 version = "0.1.0"
 edition = "2021"
 description = "A GTK4 map viewer for Tile Map Service / Web-Mercator providers"
-license = "MIT"
+license = "MIT-0"
 
 [dependencies]
 # UI toolkit. `gtk` is the crate `gtk4` renamed so the code reads `gtk::...`.
