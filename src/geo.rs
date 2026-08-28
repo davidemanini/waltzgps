@@ -103,13 +103,6 @@ impl MapState {
     }
 }
 
-/// Round a world/screen coordinate to the nearest device pixel for the given
-/// widget `scale_factor`, so tile edges land exactly on the device pixel grid
-/// instead of blurring across it on HiDPI (fractional-scale) outputs.
-pub fn round_to_device(v: f64, scale_factor: f64) -> f64 {
-    (v * scale_factor).round() / scale_factor
-}
-
 /// Screen rectangle `(x, y, w, h)` a tile occupies in a `w`×`h` viewport under
 /// `map`, or `None` if the tile belongs to a different zoom level than the
 /// viewport, or isn't currently visible. Mirrors the tile-range/wraparound
@@ -231,13 +224,6 @@ mod tests {
         let direct = tile_screen_rect(&map, crate::tile::TileId::new(1, 1, 1), 800.0, 600.0);
         assert_eq!(via_ancestor, direct);
         assert!(direct.is_some());
-    }
-
-    #[test]
-    fn round_to_device_snaps_to_grid() {
-        assert_eq!(round_to_device(10.3, 1.0), 10.0);
-        assert_eq!(round_to_device(10.3, 2.0), 10.5);
-        assert_eq!(round_to_device(10.24, 2.0), 10.0);
     }
 
     #[test]

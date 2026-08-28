@@ -4,14 +4,14 @@ use crate::config::Config;
 use crate::downloader::TileKey;
 use crate::geo::MapState;
 use crate::persist::MapPersist;
-use gtk::gdk_pixbuf::Pixbuf;
+use gtk::gdk::Texture;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 /// Soft cap on decoded tiles kept in memory; the disk cache is the real store.
-const PIXBUF_CAP: usize = 2048;
+const TEXTURE_CAP: usize = 2048;
 
 pub type SharedState = Rc<RefCell<AppState>>;
 
@@ -21,8 +21,8 @@ pub struct AppState {
     pub config_path: PathBuf,
     pub map: MapState,
     pub active_provider: usize,
-    /// Decoded tiles ready to paint.
-    pub pixbufs: HashMap<TileKey, Pixbuf>,
+    /// Decoded tiles, uploaded once as GPU textures, ready to paint.
+    pub textures: HashMap<TileKey, Texture>,
     /// Tiles currently requested from the downloader (avoids duplicate fetches).
     pub inflight: HashSet<TileKey>,
     /// Last known pointer position over the map (for cursor-anchored zoom).
@@ -47,7 +47,7 @@ impl AppState {
             config_path,
             map,
             active_provider,
-            pixbufs: HashMap::new(),
+            textures: HashMap::new(),
             inflight: HashSet::new(),
             last_pointer: (0.0, 0.0),
             drag_start_center: (0.0, 0.0),
@@ -91,10 +91,10 @@ impl AppState {
 
     /// Insert a decoded tile, discarding the whole in-memory set if it grows
     /// past the soft cap (tiles reload quickly from disk).
-    pub fn insert_pixbuf(&mut self, key: TileKey, pb: Pixbuf) {
-        if self.pixbufs.len() >= PIXBUF_CAP {
-            self.pixbufs.clear();
+    pub fn insert_texture(&mut self, key: TileKey, texture: Texture) {
+        if self.textures.len() >= TEXTURE_CAP {
+            self.textures.clear();
         }
-        self.pixbufs.insert(key, pb);
+        self.textures.insert(key, texture);
     }
 }

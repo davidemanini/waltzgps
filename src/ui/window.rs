@@ -4,13 +4,13 @@
 use crate::app_state::SharedState;
 use crate::downloader::Downloader;
 use crate::geo;
-use crate::ui::map_view;
+use crate::ui::map_view::{self, MapArea};
 use futures_util::StreamExt;
 use gtk::gdk::Key;
 use gtk::glib;
 use gtk::glib::prelude::*;
 use gtk::prelude::*;
-use gtk::{gio, DrawingArea};
+use gtk::gio;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -124,7 +124,7 @@ fn build_queue_indicator(queue_label: gtk::Label) -> gtk::Box {
 fn build_controls(
     window: &gtk::ApplicationWindow,
     state: &SharedState,
-    area: &DrawingArea,
+    area: &MapArea,
     downloader: &Rc<Downloader>,
     provider_action: &gio::SimpleAction,
 ) -> gtk::Box {
@@ -152,7 +152,7 @@ fn build_controls(
             downloader.clear_queue();
             {
                 let mut st = state.borrow_mut();
-                st.pixbufs.clear();
+                st.textures.clear();
                 st.inflight.clear();
             }
             populate_provider_section(&provider_section, &state);
@@ -234,7 +234,7 @@ fn populate_provider_section(section: &gio::Menu, state: &SharedState) {
 fn install_actions(
     window: &gtk::ApplicationWindow,
     state: &SharedState,
-    area: &DrawingArea,
+    area: &MapArea,
     downloader: &Rc<Downloader>,
 ) -> gio::SimpleAction {
     // Provider switching (radio-style stateful action, i32 target = index).
@@ -278,7 +278,7 @@ fn install_actions(
 }
 
 /// Right-click popover on the map with a single "Show coordinates" item.
-fn install_context_menu(state: &SharedState, area: &DrawingArea) {
+fn install_context_menu(state: &SharedState, area: &MapArea) {
     let menu = gio::Menu::new();
     menu.append(Some("Show coordinates"), Some("win.show-coords"));
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
@@ -304,7 +304,7 @@ fn install_context_menu(state: &SharedState, area: &DrawingArea) {
 fn install_keyboard(
     window: &gtk::ApplicationWindow,
     state: &SharedState,
-    area: &DrawingArea,
+    area: &MapArea,
     downloader: &Rc<Downloader>,
 ) {
     let keys = gtk::EventControllerKey::new();
@@ -363,7 +363,7 @@ fn digit_index(key: Key) -> Option<usize> {
 /// `zoom_label` sits between the zoom-out and zoom-in buttons.
 fn build_nav(
     state: SharedState,
-    area: DrawingArea,
+    area: MapArea,
     downloader: Rc<Downloader>,
     zoom_label: gtk::Label,
 ) -> gtk::Box {
@@ -409,10 +409,10 @@ fn build_nav(
     nav
 }
 
-/// Drive tile results from the downloader into the pixbuf cache and redraw.
+/// Drive tile results from the downloader into the texture cache and redraw.
 fn pump_results(
     state: SharedState,
-    area: DrawingArea,
+    area: MapArea,
     downloader: Rc<Downloader>,
     queue_label: gtk::Label,
 ) {
@@ -422,15 +422,14 @@ fn pump_results(
             let (redraw, pending) = {
                 let mut st = state.borrow_mut();
                 st.inflight.remove(&res.key);
-                let redraw = match res.data.and_then(|bytes| map_view::decode_pixbuf(&bytes)) {
-                    Some(pb) => {
+                let redraw = match res.data.and_then(|bytes| map_view::decode_texture(&bytes)) {
+                    Some(texture) => {
                         let (w, h) = (area.width() as f64, area.height() as f64);
                         let tile = res.key.tile;
-                        // GTK4's DrawingArea has no partial/region redraw API
-                        // (unlike GTK3's `queue_draw_area`), so a redraw always
-                        // repaints the whole widget from the (cheap, in-memory)
-                        // pixbuf cache. The win available here is skipping that
-                        // repaint entirely when the tile that just arrived
+                        // A redraw re-snapshots the whole widget (cheap: it's
+                        // just appending cached-texture nodes, not
+                        // re-rasterizing pixels), but it's still not free, so
+                        // skip it entirely when the tile that just arrived
                         // isn't even visible — e.g. a stale request left over
                         // from a view the user has since panned or zoomed away
                         // from. A same-zoom tile is checked directly; a zoom+1
@@ -446,7 +445,7 @@ fn pump_results(
                         } else {
                             true
                         };
-                        st.insert_pixbuf(res.key, pb);
+                        st.insert_texture(res.key, texture);
                         visible
                     }
                     None => false,
@@ -465,12 +464,12 @@ fn pump_results(
 
 // --- shared operations -------------------------------------------------------
 
-fn pan(state: &SharedState, area: &DrawingArea, dx: f64, dy: f64) {
+fn pan(state: &SharedState, area: &MapArea, dx: f64, dy: f64) {
     state.borrow_mut().map.pan_px(dx, dy);
     area.queue_draw();
 }
 
-fn zoom_center(state: &SharedState, area: &DrawingArea, downloader: &Rc<Downloader>, zoom_in: bool) {
+fn zoom_center(state: &SharedState, area: &MapArea, downloader: &Rc<Downloader>, zoom_in: bool) {
     let changed = {
         let mut st = state.borrow_mut();
         let (w, h) = (area.width() as f64, area.height() as f64);
@@ -495,7 +494,7 @@ fn zoom_center(state: &SharedState, area: &DrawingArea, downloader: &Rc<Download
     area.queue_draw();
 }
 
-fn set_provider(state: &SharedState, area: &DrawingArea, downloader: &Rc<Downloader>, idx: usize) {
+fn set_provider(state: &SharedState, area: &MapArea, downloader: &Rc<Downloader>, idx: usize) {
     let changed = {
         let mut st = state.borrow_mut();
         if idx < st.config.providers.len() && idx != st.active_provider {
