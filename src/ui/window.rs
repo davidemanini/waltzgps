@@ -3,6 +3,7 @@
 
 use crate::app_state::SharedState;
 use crate::downloader::Downloader;
+use crate::geo;
 use crate::ui::map_view;
 use futures_util::StreamExt;
 use gtk::gdk::Key;
@@ -94,7 +95,7 @@ fn install_state_persistence(window: &gtk::ApplicationWindow, state: &SharedStat
 /// Install the application-wide CSS used by the floating HUD widgets.
 fn install_css() {
     let provider = gtk::CssProvider::new();
-    provider.load_from_data(
+    provider.load_from_string(
         ".hud { background-color: rgba(0,0,0,0.65); color: #fff; \
          padding: 2px 8px; border-radius: 6px; }",
     );
@@ -423,8 +424,30 @@ fn pump_results(
                 st.inflight.remove(&res.key);
                 let redraw = match res.data.and_then(|bytes| map_view::decode_pixbuf(&bytes)) {
                     Some(pb) => {
+                        let (w, h) = (area.width() as f64, area.height() as f64);
+                        let tile = res.key.tile;
+                        // GTK4's DrawingArea has no partial/region redraw API
+                        // (unlike GTK3's `queue_draw_area`), so a redraw always
+                        // repaints the whole widget from the (cheap, in-memory)
+                        // pixbuf cache. The win available here is skipping that
+                        // repaint entirely when the tile that just arrived
+                        // isn't even visible — e.g. a stale request left over
+                        // from a view the user has since panned or zoomed away
+                        // from. A same-zoom tile is checked directly; a zoom+1
+                        // tile is only ever drawn as a quadrant of its parent
+                        // (HiDPI compositing), so its parent's visibility is
+                        // checked instead; any other zoom (an ancestor that
+                        // just became usable as a fallback) conservatively
+                        // redraws, since it may back several visible tiles.
+                        let visible = if tile.z == st.map.zoom {
+                            geo::tile_screen_rect(&st.map, tile, w, h).is_some()
+                        } else if tile.z == st.map.zoom + 1 {
+                            geo::ancestor_screen_rect(&st.map, tile, 1, w, h).is_some()
+                        } else {
+                            true
+                        };
                         st.insert_pixbuf(res.key, pb);
-                        true
+                        visible
                     }
                     None => false,
                 };

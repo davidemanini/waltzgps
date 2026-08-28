@@ -52,6 +52,10 @@ pub struct MapState {
     pub center_lon: f64,
     pub center_lat: f64,
     pub zoom: u8,
+    /// Fractional zoom offset applied on top of `zoom` while a pinch-to-zoom
+    /// gesture is in progress; `0.0` outside a gesture. Never persisted, and
+    /// never used for tile selection/fetching (those stay keyed on `zoom`).
+    pub zoom_frac: f64,
 }
 
 impl MapState {
@@ -99,6 +103,67 @@ impl MapState {
     }
 }
 
+/// Round a world/screen coordinate to the nearest device pixel for the given
+/// widget `scale_factor`, so tile edges land exactly on the device pixel grid
+/// instead of blurring across it on HiDPI (fractional-scale) outputs.
+pub fn round_to_device(v: f64, scale_factor: f64) -> f64 {
+    (v * scale_factor).round() / scale_factor
+}
+
+/// Screen rectangle `(x, y, w, h)` a tile occupies in a `w`×`h` viewport under
+/// `map`, or `None` if the tile belongs to a different zoom level than the
+/// viewport, or isn't currently visible. Mirrors the tile-range/wraparound
+/// math used when actually painting tiles, so a decoded tile's arrival can be
+/// translated into a minimal `queue_draw_area` invalidation.
+pub fn tile_screen_rect(
+    map: &MapState,
+    tile: crate::tile::TileId,
+    w: f64,
+    h: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    if tile.z != map.zoom {
+        return None;
+    }
+    let (tlx, tly) = map.top_left_world(w, h);
+    let origin_x = tlx.round();
+    let origin_y = tly.round();
+    let ntiles = tile_count(map.zoom);
+
+    let dst_y = tile.y as f64 * TILE_SIZE - origin_y;
+    if dst_y + TILE_SIZE < 0.0 || dst_y > h {
+        return None;
+    }
+
+    let x0 = (tlx / TILE_SIZE).floor() as i64;
+    let x1 = ((tlx + w) / TILE_SIZE).floor() as i64;
+    for tx in x0..=x1 {
+        if tx.rem_euclid(ntiles) as u32 == tile.x {
+            let dst_x = tx as f64 * TILE_SIZE - origin_x;
+            if dst_x + TILE_SIZE >= 0.0 && dst_x <= w {
+                return Some((dst_x, dst_y, TILE_SIZE, TILE_SIZE));
+            }
+        }
+    }
+    None
+}
+
+/// Screen rect of `tile`'s ancestor `levels_up` zoom levels above it (e.g.
+/// `levels_up = 1` for its immediate parent), or `None` if there's no such
+/// ancestor or it isn't currently visible in a `w`×`h` viewport under `map`.
+pub fn ancestor_screen_rect(
+    map: &MapState,
+    tile: crate::tile::TileId,
+    levels_up: u8,
+    w: f64,
+    h: f64,
+) -> Option<(f64, f64, f64, f64)> {
+    if tile.z < levels_up {
+        return None;
+    }
+    let ancestor = crate::tile::TileId::new(tile.z - levels_up, tile.x >> levels_up, tile.y >> levels_up);
+    tile_screen_rect(map, ancestor, w, h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,8 +196,53 @@ mod tests {
     }
 
     #[test]
+    fn tile_screen_rect_finds_visible_center_tile() {
+        // At (0,0)/zoom 1 the viewport is centred on tile (1,1)'s corner; the
+        // 800x600 viewport should include it somewhere on screen.
+        let map = MapState { center_lon: 0.0, center_lat: 0.0, zoom: 1, zoom_frac: 0.0 };
+        let rect = tile_screen_rect(&map, crate::tile::TileId::new(1, 1, 1), 800.0, 600.0);
+        assert!(rect.is_some(), "expected the tile under the viewport centre to be visible");
+        let (x, y, w, h) = rect.unwrap();
+        assert_eq!((w, h), (TILE_SIZE, TILE_SIZE));
+        assert!(x + w >= 0.0 && x <= 800.0);
+        assert!(y + h >= 0.0 && y <= 600.0);
+    }
+
+    #[test]
+    fn tile_screen_rect_rejects_wrong_zoom_or_offscreen() {
+        let map = MapState { center_lon: 0.0, center_lat: 0.0, zoom: 5, zoom_frac: 0.0 };
+        // Wrong zoom level than the viewport's.
+        assert!(tile_screen_rect(&map, crate::tile::TileId::new(6, 0, 0), 800.0, 600.0).is_none());
+        // Same zoom, but nowhere near the viewport.
+        assert!(tile_screen_rect(&map, crate::tile::TileId::new(5, 31, 31), 800.0, 600.0).is_none());
+    }
+
+    #[test]
+    fn ancestor_screen_rect_maps_to_parent() {
+        // `ancestor_screen_rect` is used from a viewport at the *ancestor's*
+        // zoom level (e.g. a decoded zoom+1 child tile is drawn as a quadrant
+        // of its zoom-level parent, so `map.zoom` is the parent's zoom here).
+        let map = MapState { center_lon: 0.0, center_lat: 0.0, zoom: 1, zoom_frac: 0.0 };
+        // Child at zoom 2 tile (3,3); its zoom-1 parent is (1,1) at zoom 1,
+        // which is exactly `map.zoom`, so it should resolve to the same rect
+        // as looking up that parent tile directly.
+        let child = crate::tile::TileId::new(2, 3, 3);
+        let via_ancestor = ancestor_screen_rect(&map, child, 1, 800.0, 600.0);
+        let direct = tile_screen_rect(&map, crate::tile::TileId::new(1, 1, 1), 800.0, 600.0);
+        assert_eq!(via_ancestor, direct);
+        assert!(direct.is_some());
+    }
+
+    #[test]
+    fn round_to_device_snaps_to_grid() {
+        assert_eq!(round_to_device(10.3, 1.0), 10.0);
+        assert_eq!(round_to_device(10.3, 2.0), 10.5);
+        assert_eq!(round_to_device(10.24, 2.0), 10.0);
+    }
+
+    #[test]
     fn zoom_around_keeps_point_fixed() {
-        let mut s = MapState { center_lon: 2.3522, center_lat: 48.8566, zoom: 12 };
+        let mut s = MapState { center_lon: 2.3522, center_lat: 48.8566, zoom: 12, zoom_frac: 0.0 };
         let (w, h) = (800.0, 600.0);
         let (sx, sy) = (300.0, 200.0);
         let before = s.screen_to_lonlat(sx, sy, w, h);

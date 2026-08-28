@@ -38,7 +38,8 @@ impl AppState {
         let map = MapState{
 	    center_lon: persist.lon,
 	    center_lat: persist.lat,
-	    zoom: persist.zoom
+	    zoom: persist.zoom,
+	    zoom_frac: 0.0,
 	};
         let active_provider = config.provider_index(persist.provider);
         Rc::new(RefCell::new(AppState {

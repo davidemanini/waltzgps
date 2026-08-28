@@ -73,10 +73,25 @@ pub struct General {
     /// accumulating toward a one-level zoom step. Lower = less sensitive.
     #[serde(default = "default_scroll_sensitivity")]
     pub scroll_sensitivity: f64,
+    /// Whether trackpad pinch-to-zoom is active at all.
+    #[serde(default = "default_pinch_zoom_enabled")]
+    pub pinch_zoom_enabled: bool,
+    /// Pinch-gesture zoom sensitivity: the gesture's scale delta (in log2
+    /// units, i.e. zoom levels) is scaled by this. Lower = less sensitive.
+    #[serde(default = "default_pinch_zoom_sensitivity")]
+    pub pinch_zoom_sensitivity: f64,
 }
 
 fn default_scroll_sensitivity() -> f64 {
     0.1
+}
+
+fn default_pinch_zoom_enabled() -> bool {
+    true
+}
+
+fn default_pinch_zoom_sensitivity() -> f64 {
+    1.0
 }
 
 /// On-disk cache limits.
@@ -118,6 +133,8 @@ impl Default for Config {
         Config {
             general: General {
                 scroll_sensitivity: 1.0,
+                pinch_zoom_enabled: default_pinch_zoom_enabled(),
+                pinch_zoom_sensitivity: default_pinch_zoom_sensitivity(),
             },
             providers: vec![
                 Provider {
