@@ -38,7 +38,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Rc::new(Config::load(&config_path)?);
     let config_path = Rc::new(config_path);
 
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    let app = gtk::Application::builder().application_id(APP_ID)
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
+	.build();
 
     app.connect_activate(move |app| {
         let config = (*config).clone();
